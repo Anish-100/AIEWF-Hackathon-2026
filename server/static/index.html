@@ -87,11 +87,21 @@
       margin-bottom: 10px;
       border-radius: 4px;
       position: relative;
+      transition: border-left-color 0.4s ease, background 0.4s ease;
     }
     .card.verdict-true     { border-left-color: #4caf50; }
     .card.verdict-false    { border-left-color: #d32f2f; background: #fff4f4; }
     .card.verdict-researching, .card.verdict-detected { border-left-color: #f4a52a; }
     .card.verdict-unverifiable { border-left-color: #888; }
+    @keyframes flash-true  { 0% { box-shadow: 0 0 0 0 rgba(76,175,80,0.55); } 100% { box-shadow: 0 0 0 12px rgba(76,175,80,0); } }
+    @keyframes flash-false { 0% { box-shadow: 0 0 0 0 rgba(211,47,47,0.55); } 100% { box-shadow: 0 0 0 12px rgba(211,47,47,0); } }
+    .card.flash-true  { animation: flash-true  0.7s ease-out 1; }
+    .card.flash-false { animation: flash-false 0.7s ease-out 1; }
+    @keyframes banner-slide-in {
+      from { transform: translateY(-8px); opacity: 0; }
+      to   { transform: translateY(0);    opacity: 1; }
+    }
+    .banner { animation: banner-slide-in 0.35s ease-out 1; }
     .card .row {
       display: flex; align-items: center; gap: 8px;
       margin-bottom: 6px;
@@ -212,11 +222,11 @@
       <div id="banner-slot"></div>
       <p class="section-title">Live transcript</p>
       <div id="transcript" class="transcript-strip">
-        <div class="empty" style="border:none;">Waiting for voice…</div>
+        <div class="empty" style="border:none;">Join the LiveKit room and start talking — your speech appears here.</div>
       </div>
       <p class="section-title">Fact-checked claims</p>
       <div id="claims">
-        <div class="empty">No claims yet</div>
+        <div class="empty">Verifiable claims show here with ✓ TRUE / ✗ FALSE / ⌛ RESEARCHING badges.</div>
       </div>
     </section>
     <aside class="right">
@@ -323,6 +333,10 @@
       }
     }, 1000);
 
+    // Track each card's last verdict so we know when it FLIPS (researching →
+    // true/false) and can play a one-shot flash animation on the transition.
+    const claimLastVerdict = new Map();
+
     function renderClaim(c) {
       let node = claimNodes.get(c.id);
       const isNew = !node;
@@ -332,7 +346,18 @@
         claimAppearedAt.set(c.id, Date.now());
       }
       const vKey = verdictKey(c);
+      const prevKey = claimLastVerdict.get(c.id);
+      const flippedToTrue  = vKey === "true"  && prevKey !== "true";
+      const flippedToFalse = vKey === "false" && prevKey !== "false";
+      claimLastVerdict.set(c.id, vKey);
       node.className = "card verdict-" + vKey;
+      if (flippedToTrue)  node.classList.add("flash-true");
+      if (flippedToFalse) node.classList.add("flash-false");
+      // Clear the animation class after it finishes so re-renders don't
+      // accidentally retrigger it.
+      if (flippedToTrue || flippedToFalse) {
+        setTimeout(() => node.classList.remove("flash-true", "flash-false"), 800);
+      }
       node.innerHTML = "";
 
       const badge = document.createElement("div");

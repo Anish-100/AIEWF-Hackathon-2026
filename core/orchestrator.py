@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 import uuid
 from typing import Optional
 
@@ -29,10 +30,16 @@ class Orchestrator:
         # Each orchestrator run is one session. The id is durable so the
         # end-of-session distiller can replay this conversation's transcript.
         self.session_id: str = "veritas-" + uuid.uuid4().hex[:12]
+        # Wall-clock anchor for clip_ts. Set when the orchestrator actually
+        # starts (in run()), then used by every claim/transcript event so that
+        # timestamps are *session-relative* — they do NOT reset when a
+        # LiveSession reconnects after a mute or stall.
+        self.session_started_at: float = 0.0
         self._speakers_seen: set[str] = set()
         self._contradiction = contradiction.ContradictionChecker()
 
     async def run(self) -> None:
+        self.session_started_at = time.time()
         log.info("orchestrator: starting session_id=%s", self.session_id)
         try:
             memory.get_memory().start_session(self.session_id, topic="", n_speakers=0)
@@ -128,6 +135,12 @@ class Orchestrator:
 
     # --- Gemini -> event bus ----
 
+    def _now_ts(self) -> float:
+        """Session-relative wall clock. Stable across LiveSession reconnects."""
+        if self.session_started_at == 0.0:
+            return 0.0
+        return round(time.time() - self.session_started_at, 2)
+
     async def _handle_segment(self, segment: dict) -> None:
         text = (segment.get("text") or "").strip()
         if not text:
@@ -137,7 +150,7 @@ class Orchestrator:
                 "type": "partial",
                 "speaker_id": segment["speaker_id"],
                 "text": text,
-                "ts": round(segment.get("ts", 0.0), 2),
+                "ts": self._now_ts(),
             })
             return
 
@@ -147,7 +160,7 @@ class Orchestrator:
 
     async def _process_finalized(self, segment: dict, text: str) -> None:
         speaker_id = segment["speaker_id"]
-        clip_ts = round(segment.get("ts", 0.0), 2)
+        clip_ts = self._now_ts()
 
         # Log every finalized utterance to the durable transcript regardless of
         # claim-worthiness — the end-of-session distiller replays this later
