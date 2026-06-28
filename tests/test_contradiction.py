@@ -92,3 +92,44 @@ def test_third_claim_against_earliest_still_fires():
     out = chk.record_and_check(_make_claim("carol", "X", "999", clip_ts=3.0, embedding=emb))
     assert out is not None
     assert out.kind == "cross_speaker"
+
+
+def test_different_months_do_not_contradict_even_when_embeddings_are_close():
+    """Regression — embeddings of 'unemployment rate March 2025' and
+    'unemployment rate May 2025' are ~0.97 cosine, but these are *different
+    facts* (different months), not a contradiction.
+
+    The canonical-subject-string check should keep them apart even though we
+    pass an identical fake embedding here (which would otherwise make the
+    embedding-only path think they're the same)."""
+    chk = ContradictionChecker()
+    emb = _emb(11)
+    c1 = _make_claim("banh",   "US unemployment rate March 2025", "3.5", clip_ts=33.8, embedding=emb)
+    c2 = _make_claim("anis2h", "US unemployment rate May 2025",   "4.1", clip_ts=48.2, embedding=emb)
+    chk.record_and_check(c1)
+    out = chk.record_and_check(c2)
+    assert out is None, f"different-month claims should NOT contradict, got {out}"
+
+
+def test_same_value_with_and_without_unit_not_a_contradiction():
+    """4.1 (no unit) vs 4.1% (with %) describe the same value — no contradiction."""
+    chk = ContradictionChecker()
+    emb = _emb(12)
+    c1 = _make_claim("alex", "US unemployment rate May 2025", "4.1", clip_ts=10.0, embedding=emb, unit=None)
+    c2 = _make_claim("bob",  "US unemployment rate May 2025", "4.1", clip_ts=20.0, embedding=emb, unit="%")
+    chk.record_and_check(c1)
+    assert chk.record_and_check(c2) is None
+
+
+def test_subject_key_normalises_punctuation_and_case():
+    """'US Unemployment Rate, May 2025' and 'us unemployment rate may 2025'
+    should be treated as the same subject (so a real disagreement between
+    speakers fires)."""
+    chk = ContradictionChecker()
+    emb = _emb(13)
+    c1 = _make_claim("alex", "US Unemployment Rate, May 2025", "4.1", clip_ts=10.0, embedding=emb)
+    c2 = _make_claim("bob",  "us unemployment rate may 2025",  "5.5", clip_ts=20.0, embedding=emb)
+    chk.record_and_check(c1)
+    out = chk.record_and_check(c2)
+    assert out is not None
+    assert out.kind == "cross_speaker"

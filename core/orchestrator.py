@@ -15,7 +15,7 @@ from typing import Optional
 
 import config
 from adapters import gemini_flash, gemini_live, livekit_audio
-from core import contradiction, event_bus, memory, verifier
+from core import contradiction, event_bus, memory, metrics, verifier
 from core.schemas import Claim
 
 log = logging.getLogger(__name__)
@@ -38,6 +38,15 @@ class Orchestrator:
             memory.get_memory().start_session(self.session_id, topic="", n_speakers=0)
         except Exception:
             log.exception("orchestrator: failed to record session start (continuing)")
+        # Reset metrics for this run and push a baseline (0 across the board)
+        # plus the current memory size so the UI shows the cold→warm starting
+        # point even before any speaker says anything.
+        metrics.reset()
+        metrics.publish()
+        try:
+            metrics.publish_memory_size(memory.get_memory().size())
+        except Exception:
+            log.exception("orchestrator: failed to publish initial memory size")
         try:
             await livekit_audio.run_room_subscriber(
                 on_audio_frame=self._handle_audio,
@@ -164,6 +173,10 @@ class Orchestrator:
             log.info("orchestrator: dropped non-claim from %s: %r", speaker_id, text)
             return
 
+        # Flash said it's a fact-checkable claim → it counts toward coverage.
+        metrics.note_checkworthy()
+        metrics.publish()
+
         claim = Claim(
             session_id=self.session_id,
             speaker_id=speaker_id,
@@ -193,6 +206,14 @@ class Orchestrator:
             speaker_id, text, claim.status, claim.verdict, claim.source,
         )
 
+        # Verifier finished → record hit/miss and time-to-verdict.
+        metrics.note_verdict(hit=hit, time_to_verdict_ms=claim.time_to_verdict_ms)
+        metrics.publish()
+        try:
+            metrics.publish_memory_size(memory.get_memory().size())
+        except Exception:
+            pass
+
         # Intra-session contradiction scan (same-speaker / cross-speaker).
         try:
             conflict = self._contradiction.record_and_check(claim)
@@ -200,6 +221,8 @@ class Orchestrator:
             log.exception("contradiction check crashed for claim=%r", claim.id)
             conflict = None
         if conflict is not None:
+            metrics.note_contradiction()
+            metrics.publish()
             event_bus.publish({"type": "contradiction", "contradiction": {
                 "id": conflict.id,
                 "subject": conflict.subject,

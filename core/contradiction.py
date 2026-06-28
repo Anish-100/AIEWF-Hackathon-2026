@@ -18,6 +18,7 @@ them as contradictions.
 from __future__ import annotations
 
 import logging
+import re
 import time
 from dataclasses import dataclass, field
 from typing import Any, Optional
@@ -36,10 +37,31 @@ class _LoggedClaim:
     id: str
     speaker_id: str
     subject: str
+    subject_key: str            # normalised subject for exact-equality match
     embedding: np.ndarray
     value: Any
     unit: Optional[str]
     clip_ts: float
+
+
+_PUNCT_RE = re.compile(r"[^\w\s]")
+_WS_RE = re.compile(r"\s+")
+
+
+def _normalize_subject(subject: str) -> str:
+    """Canonical form for exact-equality subject comparison.
+
+    Lowercase, strip punctuation, collapse whitespace. Two subjects that differ
+    only by a month / quarter / year token will NOT collapse — that's the
+    point: 'us unemployment rate may 2025' != 'us unemployment rate march 2025',
+    so they won't be flagged as contradictions even though their embeddings
+    are ~0.97 cosine similar.
+    """
+    if not subject:
+        return ""
+    s = _PUNCT_RE.sub(" ", subject.lower())
+    s = _WS_RE.sub(" ", s).strip()
+    return s
 
 
 def _cosine(a: np.ndarray, b: np.ndarray) -> float:
@@ -76,9 +98,20 @@ class ContradictionChecker:
             return None
 
         emb = np.asarray(claim.embedding, dtype=np.float32)
+        new_key = _normalize_subject(claim.subject)
         for prior in self._log:
+            # Two guards. Embedding similarity is a fast filter; the canonical
+            # subject-string equality is the real gate. Embeddings happily
+            # consider "US unemployment rate May 2025" and "US unemployment
+            # rate March 2025" ~0.97 similar, so without the string-equality
+            # check we'd fire spurious "contradictions" between different
+            # months of the same metric.
+            if prior.subject_key != new_key:
+                continue
             sim = _cosine(emb, prior.embedding)
             if sim < config.SUBJECT_MATCH_THRESHOLD:
+                # Should be impossible (same canonical subject ⇒ near-identical
+                # embedding) but cheap to defend against odd embedding drift.
                 continue
             match = verifier.values_match(
                 claim.value, prior.value, claim.unit, prior.unit, config.VALUE_TOLERANCE
@@ -90,8 +123,7 @@ class ContradictionChecker:
             explanation = (
                 f"{prior.speaker_id} said {_fmt_value(prior.value, prior.unit)} at "
                 f"t={prior.clip_ts:.1f}s; {claim.speaker_id} now says "
-                f"{_fmt_value(claim.value, claim.unit)} at t={claim.clip_ts:.1f}s "
-                f"(subject similarity {sim:.2f})."
+                f"{_fmt_value(claim.value, claim.unit)} at t={claim.clip_ts:.1f}s."
             )
             contradiction = Contradiction(
                 subject=claim.subject,
@@ -123,6 +155,7 @@ class ContradictionChecker:
             id=claim.id,
             speaker_id=claim.speaker_id,
             subject=claim.subject,
+            subject_key=_normalize_subject(claim.subject),
             embedding=np.asarray(claim.embedding, dtype=np.float32),
             value=claim.value,
             unit=claim.unit,

@@ -21,12 +21,12 @@
 - **Sessions/utterances tables:** ✅ `sessions(id, started_at, ended_at, topic, n_speakers)` + `utterances(session_id, ts, clip_ts, speaker_id, text)`. Orchestrator generates a unique session id per run, logs every finalized utterance.
 
 - **Phase 4 (Contradiction detection):** ✅ same-speaker + cross-speaker. `core/contradiction.py` with `ContradictionChecker` (in-memory per-session log); wired into orchestrator after verify; UI banner already in `server/static/index.html`. 6 unit tests pass. Note: KB-conflict claims are *not* surfaced as banners (the red ✗ card is already the signal); banners are reserved for intra-session speaker-vs-speaker conflicts.
+- **Phase 5 (Metrics + runbook):** ✅ live coverage / mean-TTV / memory-hits / contradictions counters move on every claim. `core/metrics.py` exposes `note_checkworthy / note_verdict / note_contradiction / publish / publish_memory_size`; orchestrator calls them at each step. `scripts/demo_cold_vs_warm.md` is the stage runbook for the cold→warm proof, with the contradiction-beat appended.
 
 ### What's left
 
-- **Phase 5 — Metrics + cold/warm runbook.** Orchestrator needs to publish `metrics` events so the UI counters move. `core/metrics.py` already has the `SessionMetrics` class; just need to drive it from `_process_finalized` (increment `checkworthy_seen` / `checked` / `memory_hits` / `contradictions` and emit).
 - **Phase 6 — Async research via Gemini Interactions API → Antigravity** (the stretch / first-to-cut).
-- **Phase 7 — UI polish for the live catch.**
+- **Phase 7 — UI polish for the live catch.** (UI is already in good shape after Phase 4; this is squeeze-out polish if time permits.)
 - **Phase 8 — Rehearse + record.**
 
 ### Known caveats (do not chase unless they bite us live)
