@@ -30,9 +30,11 @@ log = logging.getLogger(__name__)
 
 _SENTENCE_SPLIT = re.compile(r"(.+?[\.\!\?])(\s+|$)", re.DOTALL)
 # Sentence buffer flush: how long after the last transcript chunk before we
-# emit the buffer as a finalized sentence. 2.5s tolerates natural "uhhh"
-# pauses without splitting one thought across multiple cards.
-_SILENCE_FLUSH_SECONDS = 2.5
+# emit the buffer as a finalized sentence. 1.0s — anything over a 1-second
+# pause is treated as a sentence boundary. Snappier feel but a mid-sentence
+# pause longer than 1s WILL split the thought into two cards; raise toward
+# 1.5s if that becomes an issue on stage.
+_SILENCE_FLUSH_SECONDS = 1.0
 # Session-level stall: send active but server has gone fully silent for this
 # long → declare dead and reconnect. Generous (15s) so a quiet pause between
 # speakers doesn't churn the session.
@@ -48,7 +50,10 @@ _MONOLOGUE_AFTER_SECONDS = 20.0
 # (`output_transcription`) before giving up and showing the source-language
 # text on its own. Without this, source text arriving with no matching
 # translation sits in `_source_buffer` and never gets emitted to the UI.
-_SOURCE_FALLBACK_SECONDS = 4.0
+# Slightly longer than _SILENCE_FLUSH_SECONDS so the normal English flush
+# wins when translation is in-flight; only fires when the translation
+# genuinely never comes.
+_SOURCE_FALLBACK_SECONDS = 2.0
 
 OnSegment = Callable[[dict], Awaitable[None]]
 # segment: {
