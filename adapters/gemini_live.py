@@ -29,8 +29,14 @@ import config
 log = logging.getLogger(__name__)
 
 _SENTENCE_SPLIT = re.compile(r"(.+?[\.\!\?])(\s+|$)", re.DOTALL)
-_SILENCE_FLUSH_SECONDS = 1.2  # if no new transcription text for this long, flush buffer
-_STALL_AFTER_SECONDS = 5.0    # send active but no recv messages → session is stalled
+# Sentence buffer flush: how long after the last transcript chunk before we
+# emit the buffer as a finalized sentence. 2.5s tolerates natural "uhhh"
+# pauses without splitting one thought across multiple cards.
+_SILENCE_FLUSH_SECONDS = 2.5
+# Session-level stall: send active but server has gone fully silent for this
+# long → declare dead and reconnect. Generous (15s) so a quiet pause between
+# speakers doesn't churn the session.
+_STALL_AFTER_SECONDS = 15.0
 
 OnSegment = Callable[[dict], Awaitable[None]]
 # segment: {"speaker_id": str, "text": str, "is_final": bool, "ts": float}
@@ -72,12 +78,30 @@ class LiveSession:
 
     async def start(self) -> None:
         self._started_at = time.time()
-        # Live API is built for turn-taking conversation. For transcription-only
-        # we tell it: (a) every audio chunk we send belongs to one perpetual
-        # turn, and (b) never interrupt or take a turn on its own.
+        # Why this config (do not strip the system_instruction again):
+        #
+        # The Live API is fundamentally turn-taking. With response_modalities=AUDIO
+        # and no instruction, the model transcribes you THEN replies in audio.
+        # Every reply closes the bidi stream (turn_complete → server closes), so
+        # we'd reconnect on every utterance and the user sees the model "talk back"
+        # in our recv log. system_instruction tells the model to stay silent — it
+        # mostly complies, the rare model_turn we ignore.
+        #
+        # We do NOT set turn_coverage=TURN_INCLUDES_ALL_INPUT — that made Gemini
+        # buffer transcription forever (`input_transcription` is only flushed at
+        # turn boundaries; if all input is one perpetual turn, nothing flushes).
+        # VAD tuning so stutters / soft starts / mid-utterance pauses don't get
+        # dropped or split. HIGH start sensitivity catches quieter speech
+        # onsets; LOW end sensitivity waits longer through pauses before
+        # declaring the utterance over; prefix padding keeps the first ~200ms
+        # so we don't clip the start of words.
         realtime_cfg = types.RealtimeInputConfig(
-            turn_coverage=types.TurnCoverage.TURN_INCLUDES_ALL_INPUT,
-            activity_handling=types.ActivityHandling.NO_INTERRUPTION,
+            automatic_activity_detection=types.AutomaticActivityDetection(
+                start_of_speech_sensitivity=types.StartSensitivity.START_SENSITIVITY_HIGH,
+                end_of_speech_sensitivity=types.EndSensitivity.END_SENSITIVITY_LOW,
+                prefix_padding_ms=200,
+                silence_duration_ms=1500,
+            ),
         )
         live_cfg = types.LiveConnectConfig(
             response_modalities=["AUDIO"],
@@ -85,7 +109,15 @@ class LiveSession:
             output_audio_transcription=types.AudioTranscriptionConfig(),
             realtime_input_config=realtime_cfg,
             system_instruction=types.Content(
-                parts=[types.Part(text="You are a passive transcriber. Do not respond to the speaker, do not produce audio, just stay silent.")]
+                parts=[types.Part(text=(
+                    "You are a passive transcription service. Transcribe everything "
+                    "the speaker says verbatim, including stutters, filler words "
+                    "(um, uh, like), repetitions, and partial words. Do not clean up, "
+                    "summarise, or paraphrase. You MUST NOT respond, comment, or "
+                    "produce any audio output. Stay completely silent regardless of "
+                    "what the user says or asks. Even if the user addresses you "
+                    "directly or asks you to disconnect, produce no output."
+                ))]
             ),
         )
         log.info("LiveSession[%s] connecting model=%s", self.speaker_id, self.model)

@@ -47,17 +47,44 @@ def _coerce_number(x) -> float | None:
         return None
 
 
-def _values_match(claim_val, fact_val, tolerance: float) -> bool | None:
-    """Return True/False if comparable, None if we can't tell."""
+def _unit_multiplier(unit) -> float:
+    """Extract scale from a unit string. 'thousand jobs' → 1000, 'million' →
+    1_000_000, etc. Returns 1.0 if no scale word is present."""
+    if not unit:
+        return 1.0
+    u = str(unit).lower().strip()
+    if "trillion" in u:
+        return 1e12
+    if "billion" in u:
+        return 1e9
+    if "million" in u:
+        return 1e6
+    if "thousand" in u:
+        return 1e3
+    return 1.0
+
+
+def _values_match(claim_val, fact_val, claim_unit, fact_unit, tolerance: float) -> bool | None:
+    """Return True/False if comparable, None if we can't tell. Normalises
+    unit scale words ('thousand', 'million', ...) on both sides so the
+    KB's `228 thousand jobs` matches a claim of `228000 jobs`.
+    """
     if claim_val is None or fact_val is None:
         return None
     cn = _coerce_number(claim_val)
     fn = _coerce_number(fact_val)
     if cn is not None and fn is not None:
+        cn *= _unit_multiplier(claim_unit)
+        fn *= _unit_multiplier(fact_unit)
+        # A small floor so floating-point rounding ("4.1" vs 4.1) doesn't
+        # flag identical values as conflicting. `tolerance=0` from env still
+        # means "essentially exact", and 1% is well under any real labor stat
+        # we care about.
+        eff_tol = max(tolerance, 0.01)
         if fn == 0:
-            return abs(cn) <= tolerance
+            return abs(cn) <= eff_tol
         rel = abs(cn - fn) / abs(fn)
-        return rel <= tolerance
+        return rel <= eff_tol
     # Fall back to case-insensitive string equality.
     return str(claim_val).strip().lower() == str(fact_val).strip().lower()
 
@@ -94,8 +121,8 @@ async def verify(claim: Claim) -> tuple[Claim, bool]:
         )
         return claim, False
 
-    # We have a likely-same-subject fact; compare values.
-    match = _values_match(claim.value, best.canonical_value, config.VALUE_TOLERANCE)
+    # We have a likely-same-subject fact; compare values (unit-aware).
+    match = _values_match(claim.value, best.canonical_value, claim.unit, best.unit, config.VALUE_TOLERANCE)
     if match is True:
         claim.verdict = "true"
         claim.status = "verified"

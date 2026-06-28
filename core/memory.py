@@ -26,8 +26,8 @@ from __future__ import annotations
 import json
 import logging
 import sqlite3
-import struct
 import threading
+import time
 from pathlib import Path
 from typing import Iterable, Optional
 
@@ -138,12 +138,50 @@ class Memory:
             )
             self._conn.execute(
                 """
+                CREATE TABLE IF NOT EXISTS sessions (
+                    id TEXT PRIMARY KEY,
+                    started_at REAL,
+                    ended_at REAL,
+                    topic TEXT,
+                    n_speakers INTEGER DEFAULT 0
+                )
+                """
+            )
+            self._conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS utterances (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    session_id TEXT,
+                    ts REAL,
+                    clip_ts REAL,
+                    speaker_id TEXT,
+                    text TEXT
+                )
+                """
+            )
+            self._conn.execute("CREATE INDEX IF NOT EXISTS idx_utt_session ON utterances(session_id)")
+            self._conn.execute(
+                """
                 CREATE TABLE IF NOT EXISTS meta (
                     k TEXT PRIMARY KEY,
                     v TEXT
                 )
                 """
             )
+            # Provenance columns added in the post-Phase 2 schema bump. ALTER
+            # is idempotent-by-error-handling: an existing column raises and
+            # we ignore it. Cheap and avoids a separate migrations system.
+            for col, ddl in [
+                ("source_session_id", "ALTER TABLE verified_facts ADD COLUMN source_session_id TEXT"),
+                ("source_speaker",    "ALTER TABLE verified_facts ADD COLUMN source_speaker TEXT"),
+                ("extracted_at",      "ALTER TABLE verified_facts ADD COLUMN extracted_at REAL"),
+                ("supporting_quote",  "ALTER TABLE verified_facts ADD COLUMN supporting_quote TEXT"),
+            ]:
+                try:
+                    self._conn.execute(ddl)
+                except sqlite3.OperationalError:
+                    pass  # column already exists
+
             row = self._conn.execute("SELECT v FROM meta WHERE k = ?", (_META_DIM_KEY,)).fetchone()
             if row:
                 self._dim = int(row["v"])
@@ -166,7 +204,15 @@ class Memory:
 
     # --- writes -----------------------------------------------------------
 
-    def put(self, fact: VerifiedFact) -> None:
+    def put(
+        self,
+        fact: VerifiedFact,
+        *,
+        source_session_id: Optional[str] = None,
+        source_speaker: Optional[str] = None,
+        extracted_at: Optional[float] = None,
+        supporting_quote: Optional[str] = None,
+    ) -> None:
         if not fact.embedding:
             raise ValueError("VerifiedFact.embedding is required for put()")
         emb = np.asarray(fact.embedding, dtype=np.float32)
@@ -186,8 +232,10 @@ class Memory:
             self._conn.execute(
                 """
                 INSERT OR REPLACE INTO verified_facts
-                (id, claim_key, subject, canonical_value, unit, verdict, source, explanation, first_seen_ts, times_seen, embedding)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                (id, claim_key, subject, canonical_value, unit, verdict, source, explanation,
+                 first_seen_ts, times_seen, embedding,
+                 source_session_id, source_speaker, extracted_at, supporting_quote)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     fact.id,
@@ -201,6 +249,10 @@ class Memory:
                     fact.first_seen_ts,
                     fact.times_seen,
                     _pack_embedding(fact.embedding),
+                    source_session_id,
+                    source_speaker,
+                    extracted_at,
+                    supporting_quote,
                 ),
             )
             if _VEC_AVAILABLE:
@@ -212,6 +264,44 @@ class Memory:
                     "INSERT INTO vec_facts(rowid, embedding) VALUES (?, ?)",
                     (rowid, _pack_embedding(fact.embedding)),
                 )
+
+    # --- sessions & utterances --------------------------------------------
+
+    def start_session(self, session_id: str, topic: str = "", n_speakers: int = 0) -> None:
+        with self._lock:
+            self._conn.execute(
+                "INSERT OR REPLACE INTO sessions(id, started_at, ended_at, topic, n_speakers) VALUES(?, ?, NULL, ?, ?)",
+                (session_id, time.time(), topic, n_speakers),
+            )
+
+    def end_session(self, session_id: str) -> None:
+        with self._lock:
+            self._conn.execute(
+                "UPDATE sessions SET ended_at = ? WHERE id = ? AND ended_at IS NULL",
+                (time.time(), session_id),
+            )
+
+    def log_utterance(self, session_id: str, speaker_id: str, text: str, clip_ts: float = 0.0) -> None:
+        with self._lock:
+            self._conn.execute(
+                "INSERT INTO utterances(session_id, ts, clip_ts, speaker_id, text) VALUES(?, ?, ?, ?, ?)",
+                (session_id, time.time(), clip_ts, speaker_id, text),
+            )
+
+    def get_session_transcript(self, session_id: str) -> list[dict]:
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT speaker_id, clip_ts, text FROM utterances WHERE session_id = ? ORDER BY id",
+                (session_id,),
+            ).fetchall()
+        return [{"speaker_id": r["speaker_id"], "clip_ts": r["clip_ts"], "text": r["text"]} for r in rows]
+
+    def list_sessions(self) -> list[dict]:
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT id, started_at, ended_at, topic, n_speakers FROM sessions ORDER BY started_at DESC"
+            ).fetchall()
+        return [dict(r) for r in rows]
 
     def touch(self, fact_id: str) -> None:
         with self._lock:

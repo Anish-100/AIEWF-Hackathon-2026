@@ -80,15 +80,44 @@
     .banner .body { font-size: 14px; }
     .card {
       border: 2px solid var(--rule);
+      border-left-width: 8px;
       background: var(--bg);
       color: var(--ink);
-      padding: 12px 14px;
+      padding: 12px 14px 12px 16px;
       margin-bottom: 10px;
       border-radius: 4px;
+      position: relative;
     }
+    .card.verdict-true     { border-left-color: #4caf50; }
+    .card.verdict-false    { border-left-color: #d32f2f; background: #fff4f4; }
+    .card.verdict-researching, .card.verdict-detected { border-left-color: #f4a52a; }
+    .card.verdict-unverifiable { border-left-color: #888; }
     .card .row {
       display: flex; align-items: center; gap: 8px;
       margin-bottom: 6px;
+    }
+    .verdict-badge {
+      position: absolute;
+      top: 10px;
+      right: 12px;
+      font-size: 22px;
+      font-weight: 800;
+      line-height: 1;
+      padding: 4px 10px;
+      border: 2px solid var(--rule);
+      border-radius: 4px;
+      letter-spacing: 0.04em;
+    }
+    .verdict-badge.true        { background: #c9eac3; color: #1b4d1b; }
+    .verdict-badge.false       { background: #f6b6ad; color: #6a0e04; }
+    .verdict-badge.researching { background: #fff1b8; color: #5a4500; }
+    .verdict-badge.unverifiable{ background: #e6e6e6; color: #444; }
+    .card .text { padding-right: 110px; }
+    .card .explain {
+      margin-top: 6px;
+      font-size: 12px;
+      font-style: italic;
+      opacity: 0.85;
     }
     .chip {
       display: inline-block;
@@ -144,6 +173,30 @@
       border-radius: 4px;
       opacity: 0.7;
     }
+    .transcript-strip {
+      border: 2px solid var(--rule);
+      background: var(--bg);
+      border-radius: 4px;
+      max-height: 140px;
+      overflow-y: auto;
+      margin-bottom: 18px;
+    }
+    .transcript-row {
+      display: flex;
+      gap: 8px;
+      align-items: flex-start;
+      padding: 6px 10px;
+      border-bottom: 1px solid var(--rule);
+      font-size: 13px;
+    }
+    .transcript-row:last-child { border-bottom: none; }
+    .transcript-row .chip { flex-shrink: 0; }
+    .transcript-row .t-text { flex: 1; }
+    .transcript-row .t-ts {
+      font-size: 11px;
+      opacity: 0.6;
+      flex-shrink: 0;
+    }
   </style>
 </head>
 <body>
@@ -157,9 +210,13 @@
   <main>
     <section class="left">
       <div id="banner-slot"></div>
-      <p class="section-title">Live claims</p>
+      <p class="section-title">Live transcript</p>
+      <div id="transcript" class="transcript-strip">
+        <div class="empty" style="border:none;">Waiting for voice…</div>
+      </div>
+      <p class="section-title">Fact-checked claims</p>
       <div id="claims">
-        <div class="empty">Waiting for claims…</div>
+        <div class="empty">No claims yet</div>
       </div>
     </section>
     <aside class="right">
@@ -185,17 +242,69 @@
 
   <script>
     const claimsEl = document.getElementById("claims");
+    const transcriptEl = document.getElementById("transcript");
     const bannerSlot = document.getElementById("banner-slot");
     const modeBadge = document.getElementById("mode-badge");
     const memBadge = document.getElementById("mem-badge");
     let claimsSeen = 0;
     const claimNodes = new Map();
+    const TRANSCRIPT_MAX_ROWS = 30;
 
-    function chip(text, kind) {
+    // Stable pastel color per speaker_id (any string) so identities beyond
+    // speaker_a/speaker_b still get distinct chips.
+    const SPEAKER_PASTELS = [
+      "#ffd6a5", "#fff1b8", "#c9eac3", "#bde0fe",
+      "#cdb4db", "#ffc8dd", "#ffafcc", "#a0c4ff",
+    ];
+    const speakerColors = new Map();
+    function colorForSpeaker(id) {
+      if (!speakerColors.has(id)) {
+        let h = 0;
+        for (let i = 0; i < id.length; i++) h = ((h << 5) - h + id.charCodeAt(i)) | 0;
+        speakerColors.set(id, SPEAKER_PASTELS[Math.abs(h) % SPEAKER_PASTELS.length]);
+      }
+      return speakerColors.get(id);
+    }
+
+    function chip(text, kind, bgOverride) {
       const s = document.createElement("span");
-      s.className = "chip " + kind;
+      s.className = "chip " + (kind || "");
       s.textContent = text;
+      if (bgOverride) s.style.background = bgOverride;
       return s;
+    }
+
+    function renderTranscript(t) {
+      const empty = transcriptEl.querySelector(".empty");
+      if (empty) empty.remove();
+      const row = document.createElement("div");
+      row.className = "transcript-row";
+      row.appendChild(chip(t.speaker_id, "", colorForSpeaker(t.speaker_id)));
+      const text = document.createElement("div");
+      text.className = "t-text";
+      text.textContent = t.text;
+      const ts = document.createElement("div");
+      ts.className = "t-ts";
+      ts.textContent = `${(t.clip_ts ?? 0).toFixed(1)}s`;
+      row.appendChild(text);
+      row.appendChild(ts);
+      transcriptEl.prepend(row);
+      while (transcriptEl.children.length > TRANSCRIPT_MAX_ROWS) {
+        transcriptEl.removeChild(transcriptEl.lastChild);
+      }
+    }
+
+    function verdictGlyph(v) {
+      if (v === "true") return "✓ TRUE";
+      if (v === "false") return "✗ FALSE";
+      if (v === "unverifiable") return "? UNVERIFIABLE";
+      return "⌛ RESEARCHING";
+    }
+    function verdictKey(c) {
+      if (c.verdict === "true") return "true";
+      if (c.verdict === "false") return "false";
+      if (c.verdict === "unverifiable") return "unverifiable";
+      return "researching";
     }
 
     function renderClaim(c) {
@@ -203,16 +312,23 @@
       const isNew = !node;
       if (isNew) {
         node = document.createElement("div");
-        node.className = "card";
         claimNodes.set(c.id, node);
       }
+      const vKey = verdictKey(c);
+      node.className = "card verdict-" + vKey;
       node.innerHTML = "";
+
+      const badge = document.createElement("div");
+      badge.className = "verdict-badge " + vKey;
+      badge.textContent = verdictGlyph(c.verdict);
+      node.appendChild(badge);
+
       const row = document.createElement("div");
       row.className = "row";
-      row.appendChild(chip(c.speaker_id, "speaker-" + c.speaker_id));
-      row.appendChild(chip(c.status, "status-" + c.status));
+      row.appendChild(chip(c.speaker_id, "", colorForSpeaker(c.speaker_id)));
       if (c.source) row.appendChild(chip("src: " + c.source, ""));
-      if (c.verdict) row.appendChild(chip(c.verdict, c.verdict === "true" ? "status-verified" : c.verdict === "false" ? "status-flagged" : ""));
+      if (c.confidence != null) row.appendChild(chip(`conf ${(c.confidence * 100).toFixed(0)}%`, ""));
+      if (c.time_to_verdict_ms != null) row.appendChild(chip(`${c.time_to_verdict_ms}ms`, ""));
       node.appendChild(row);
 
       const text = document.createElement("div");
@@ -222,8 +338,15 @@
 
       const meta = document.createElement("div");
       meta.className = "meta";
-      meta.textContent = `${c.subject} · ${c.predicate} · ${c.value ?? "–"}${c.unit ?? ""} · t=${c.clip_ts}s`;
+      meta.textContent = `${c.subject || "?"} · ${c.predicate || "?"} · ${c.value ?? "–"}${c.unit ?? ""} · t=${c.clip_ts}s`;
       node.appendChild(meta);
+
+      if (c.explanation) {
+        const ex = document.createElement("div");
+        ex.className = "explain";
+        ex.textContent = "KB: " + c.explanation;
+        node.appendChild(ex);
+      }
 
       if (isNew) {
         if (claimsEl.querySelector(".empty")) claimsEl.innerHTML = "";
@@ -261,7 +384,9 @@
         let msg;
         try { msg = JSON.parse(ev.data); } catch { return; }
         if (msg.type === "hello") {
-          modeBadge.textContent = (msg.demo_mode || "demo") + " mode";
+          modeBadge.textContent = (msg.mode || msg.demo_mode || "demo") + " mode";
+        } else if (msg.type === "transcript") {
+          renderTranscript(msg);
         } else if (msg.type === "claim") {
           renderClaim(msg.claim);
         } else if (msg.type === "contradiction") {
@@ -270,6 +395,9 @@
           renderMetrics(msg.metrics);
         } else if (msg.type === "memory_size") {
           memBadge.textContent = "memory: " + msg.size;
+        } else if (msg.type === "speaker") {
+          // no-op for now; pre-warms the color cache so chips stay stable
+          colorForSpeaker(msg.speaker_id);
         }
       };
       ws.onclose = () => setTimeout(connect, 1500);

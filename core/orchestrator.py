@@ -10,16 +10,15 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import uuid
 from typing import Optional
 
 import config
 from adapters import gemini_flash, gemini_live, livekit_audio
-from core import event_bus, verifier
+from core import event_bus, memory, verifier
 from core.schemas import Claim
 
 log = logging.getLogger(__name__)
-
-SESSION_ID = "live"
 
 
 class Orchestrator:
@@ -27,9 +26,17 @@ class Orchestrator:
         self._sessions: dict[str, gemini_live.LiveSession] = {}
         self._sessions_lock = asyncio.Lock()
         self._stop = asyncio.Event()
+        # Each orchestrator run is one session. The id is durable so the
+        # end-of-session distiller can replay this conversation's transcript.
+        self.session_id: str = "veritas-" + uuid.uuid4().hex[:12]
+        self._speakers_seen: set[str] = set()
 
     async def run(self) -> None:
-        log.info("orchestrator: starting")
+        log.info("orchestrator: starting session_id=%s", self.session_id)
+        try:
+            memory.get_memory().start_session(self.session_id, topic="", n_speakers=0)
+        except Exception:
+            log.exception("orchestrator: failed to record session start (continuing)")
         try:
             await livekit_audio.run_room_subscriber(
                 on_audio_frame=self._handle_audio,
@@ -38,7 +45,11 @@ class Orchestrator:
             )
         finally:
             await self._close_all_sessions()
-            log.info("orchestrator: stopped")
+            try:
+                memory.get_memory().end_session(self.session_id)
+            except Exception:
+                log.exception("orchestrator: failed to record session end")
+            log.info("orchestrator: stopped session_id=%s", self.session_id)
 
     async def stop(self) -> None:
         self._stop.set()
@@ -123,6 +134,25 @@ class Orchestrator:
         speaker_id = segment["speaker_id"]
         clip_ts = round(segment.get("ts", 0.0), 2)
 
+        # Log every finalized utterance to the durable transcript regardless of
+        # claim-worthiness — the end-of-session distiller replays this later
+        # and may find facts the per-utterance Flash call missed.
+        try:
+            memory.get_memory().log_utterance(self.session_id, speaker_id, text, clip_ts)
+        except Exception:
+            log.exception("orchestrator: log_utterance failed")
+        if speaker_id not in self._speakers_seen:
+            self._speakers_seen.add(speaker_id)
+
+        # Always surface the finalized transcript to the UI so the user can see
+        # that their voice was heard, even when Flash drops it as non-claim.
+        event_bus.publish({
+            "type": "transcript",
+            "speaker_id": speaker_id,
+            "text": text,
+            "clip_ts": clip_ts,
+        })
+
         try:
             detection = await gemini_flash.detect(text)
         except Exception:
@@ -130,12 +160,11 @@ class Orchestrator:
             detection = {"is_checkworthy": False}
 
         if not detection.get("is_checkworthy"):
-            # Drop non-claims silently — UI is reserved for fact-checkable claims.
-            log.debug("dropped non-claim from %s: %r", speaker_id, text)
+            log.info("orchestrator: dropped non-claim from %s: %r", speaker_id, text)
             return
 
         claim = Claim(
-            session_id=SESSION_ID,
+            session_id=self.session_id,
             speaker_id=speaker_id,
             clip_ts=clip_ts,
             raw_text=text,
@@ -158,6 +187,10 @@ class Orchestrator:
 
         # Push the verified update (same id → UI replaces the in-place card).
         event_bus.publish({"type": "claim", "claim": self._claim_dict(claim)})
+        log.info(
+            "orchestrator: claim from %s text=%r → status=%s verdict=%s source=%s",
+            speaker_id, text, claim.status, claim.verdict, claim.source,
+        )
 
     @staticmethod
     def _claim_dict(claim: Claim) -> dict:

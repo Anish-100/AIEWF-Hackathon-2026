@@ -7,16 +7,37 @@
 ## Where we are right now
 
 - **Phase 0 (Scaffold):** ✅ done and verified.
-- **Phase 1 (Audio spine):** ✅ working end-to-end with a real LiveKit Meet client + real Gemini Live session. Finalized sentences appear in the UI tagged by speaker identity.
-  - `core/event_bus.py`, `adapters/livekit_audio.py`, `adapters/gemini_live.py`, `core/orchestrator.py`, `scripts/play_clip.py`, refactored `server/app.py` — all written.
-  - Diagnostic logs (send heartbeat + per-recv message) are in `adapters/gemini_live.py` and should stay until Phase 2 lands.
-  - **Known caveat — DO NOT spend more time trying to "fix" it:** Gemini Live's automatic VAD declares the user's turn over on each silence and stops processing further audio. Disabling VAD broke transcription entirely. We tried `turn_coverage=TURN_INCLUDES_ALL_INPUT` + `activity_handling=NO_INTERRUPTION` + a "stay silent" system instruction — improves things but doesn't fully solve. **Workaround that actually works:** the user rejoins the LiveKit room → new track_subscribed event → new LiveSession is opened, and transcription works again for one round. For the demo, plan around: speaker rejoins between rounds, OR each "round" is a single continuous monologue. Combining multiple short utterances within one Live session is **not reliable** today.
-- **Phases 2–8:** not started; see `PLAN.md` §Phases.
+- **Phase 1 (Audio spine):** ✅ working end-to-end with real LiveKit Meet + real Gemini Live. Multi-speaker, mute-aware (auto-reconnect on mute/unmute and on silence-stall after 5s).
+- **Phase 2 (Detection + KB + verdicts):** ✅ working.
+  - `adapters/gemini_flash.py` (strict-JSON detector with `response_schema`)
+  - `adapters/gemini_embed.py` (LRU-cached; fans out to N concurrent single-input calls — `embed_content` does *not* batch despite accepting a list)
+  - `core/memory.py` (SQLite + numpy cosine; `sqlite-vec` falls back automatically because Python.org sqlite3 lacks `enable_load_extension`)
+  - `core/verifier.py` (HIT/MISS/flagged with cosine + value comparison)
+  - `kb/demo_topic_facts.yaml` (26 US labor-market facts, Jan–Jun 2025; **illustrative — swap to real BLS for external demos**)
+  - `scripts/reset_memory.py` / `scripts/seed_memory.py`
+- **Phase 3 (Persistent memory + latency):** ✅ all 3 tests pass.
+  - `test_memory_survives_restart`, `test_sessions_survive_restart`, `test_vector_search_p50_under_100ms` (actual p50 ≈ 1.6 ms over 500 facts — 60× under budget).
+- **Bonus (end-of-session distiller):** ✅ `core/end_of_session.py` + `scripts/distill_session.py`. Replays a session's transcript through Flash, extracts durable facts with full conversational context, writes them with full provenance (`source_session_id`, `source_speaker`, `supporting_quote`).
+- **Sessions/utterances tables:** ✅ `sessions(id, started_at, ended_at, topic, n_speakers)` + `utterances(session_id, ts, clip_ts, speaker_id, text)`. Orchestrator generates a unique session id per run, logs every finalized utterance.
 
-### Future improvements parked (do not chase yet)
+### What's left
 
-- **Combine multiple finalized statements into a context window** before sending to the Phase 2 claim detector — gives Flash more pronoun/anaphora context ("their revenue" → resolved subject). Leave for after the v1 demo works.
-- **Reconnect Gemini Live session on silence-stall** to handle the rejoin caveat automatically — would need to detect the stall (no recv messages for N seconds while send heartbeats continue), close, and re-open. Defer until/unless the rejoin workaround becomes a demo problem.
+- **Phase 4 — Contradiction detection** (multi-speaker, same/cross). Next.
+- **Phase 5 — Metrics + cold/warm runbook.**
+- **Phase 6 — Async research via Gemini Interactions API → Antigravity** (the stretch / first-to-cut).
+- **Phase 7 — UI polish for the live catch.**
+- **Phase 8 — Rehearse + record.**
+
+### Known caveats (do not chase unless they bite us live)
+
+- **Gemini Live silence stall:** turn_coverage=TURN_INCLUDES_ALL_INPUT + activity_handling=NO_INTERRUPTION + system_instruction help but don't fully solve. Mitigated by orchestrator's stall watchdog (5s no-recv-while-sending → mark session dead, next frame opens a fresh one) and mute-aware reconnect.
+- **`gemini_embed` is not really batched** — `embed_content(contents=[...])` returns only the first. We fan out concurrent single calls. Cache makes it cheap.
+- **sqlite-vec is loaded but unused** — Python.org sqlite3 has no `enable_load_extension`. Numpy cosine over <10k facts is plenty fast (1.6ms p50).
+
+### Future improvements still parked
+
+- **Combine multiple finalized statements into a context window** before per-utterance detection. The end-of-session distiller already gets the full transcript so this is less urgent.
+- **Reconnect Gemini Live session on silence-stall (without dropping audio):** today the stall watchdog kills the session and reopens on next frame; ~1–2s of audio is lost. Could buffer and replay.
 
 ## What is built and verified
 
