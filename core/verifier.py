@@ -23,6 +23,16 @@ from core.schemas import Claim, VerifiedFact
 log = logging.getLogger(__name__)
 
 
+def coerce_number(x) -> float | None:
+    return _coerce_number(x)
+
+
+def values_match(claim_val, fact_val, claim_unit, fact_unit, tolerance: float) -> bool | None:
+    """Public wrapper around _values_match so other modules (contradiction)
+    can use the same unit-aware comparison without re-implementing it."""
+    return _values_match(claim_val, fact_val, claim_unit, fact_unit, tolerance)
+
+
 def _coerce_number(x) -> float | None:
     if x is None:
         return None

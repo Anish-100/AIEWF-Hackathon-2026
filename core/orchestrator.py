@@ -15,7 +15,7 @@ from typing import Optional
 
 import config
 from adapters import gemini_flash, gemini_live, livekit_audio
-from core import event_bus, memory, verifier
+from core import contradiction, event_bus, memory, verifier
 from core.schemas import Claim
 
 log = logging.getLogger(__name__)
@@ -30,6 +30,7 @@ class Orchestrator:
         # end-of-session distiller can replay this conversation's transcript.
         self.session_id: str = "veritas-" + uuid.uuid4().hex[:12]
         self._speakers_seen: set[str] = set()
+        self._contradiction = contradiction.ContradictionChecker()
 
     async def run(self) -> None:
         log.info("orchestrator: starting session_id=%s", self.session_id)
@@ -191,6 +192,28 @@ class Orchestrator:
             "orchestrator: claim from %s text=%r → status=%s verdict=%s source=%s",
             speaker_id, text, claim.status, claim.verdict, claim.source,
         )
+
+        # Intra-session contradiction scan (same-speaker / cross-speaker).
+        try:
+            conflict = self._contradiction.record_and_check(claim)
+        except Exception:
+            log.exception("contradiction check crashed for claim=%r", claim.id)
+            conflict = None
+        if conflict is not None:
+            event_bus.publish({"type": "contradiction", "contradiction": {
+                "id": conflict.id,
+                "subject": conflict.subject,
+                "kind": conflict.kind,
+                "speaker_a_id": conflict.speaker_a_id,
+                "speaker_b_id": conflict.speaker_b_id,
+                "claim_a_id": conflict.claim_a_id,
+                "claim_b_id": conflict.claim_b_id,
+                "value_a": conflict.value_a,
+                "value_b": conflict.value_b,
+                "ts_a": conflict.ts_a,
+                "ts_b": conflict.ts_b,
+                "explanation": conflict.explanation,
+            }})
 
     @staticmethod
     def _claim_dict(claim: Claim) -> dict:

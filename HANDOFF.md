@@ -20,10 +20,11 @@
 - **Bonus (end-of-session distiller):** ✅ `core/end_of_session.py` + `scripts/distill_session.py`. Replays a session's transcript through Flash, extracts durable facts with full conversational context, writes them with full provenance (`source_session_id`, `source_speaker`, `supporting_quote`).
 - **Sessions/utterances tables:** ✅ `sessions(id, started_at, ended_at, topic, n_speakers)` + `utterances(session_id, ts, clip_ts, speaker_id, text)`. Orchestrator generates a unique session id per run, logs every finalized utterance.
 
+- **Phase 4 (Contradiction detection):** ✅ same-speaker + cross-speaker. `core/contradiction.py` with `ContradictionChecker` (in-memory per-session log); wired into orchestrator after verify; UI banner already in `server/static/index.html`. 6 unit tests pass. Note: KB-conflict claims are *not* surfaced as banners (the red ✗ card is already the signal); banners are reserved for intra-session speaker-vs-speaker conflicts.
+
 ### What's left
 
-- **Phase 4 — Contradiction detection** (multi-speaker, same/cross). Next.
-- **Phase 5 — Metrics + cold/warm runbook.**
+- **Phase 5 — Metrics + cold/warm runbook.** Orchestrator needs to publish `metrics` events so the UI counters move. `core/metrics.py` already has the `SessionMetrics` class; just need to drive it from `_process_finalized` (increment `checkworthy_seen` / `checked` / `memory_hits` / `contradictions` and emit).
 - **Phase 6 — Async research via Gemini Interactions API → Antigravity** (the stretch / first-to-cut).
 - **Phase 7 — UI polish for the live catch.**
 - **Phase 8 — Rehearse + record.**
