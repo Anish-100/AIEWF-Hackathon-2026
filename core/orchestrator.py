@@ -10,12 +10,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import uuid
 from typing import Optional
 
 import config
-from adapters import gemini_live, livekit_audio
-from core import event_bus
+from adapters import gemini_flash, gemini_live, livekit_audio
+from core import event_bus, verifier
+from core.schemas import Claim
 
 log = logging.getLogger(__name__)
 
@@ -106,31 +106,78 @@ class Orchestrator:
         text = (segment.get("text") or "").strip()
         if not text:
             return
-        if segment.get("is_final"):
-            event_bus.publish({
-                "type": "claim",
-                "claim": {
-                    "id": uuid.uuid4().hex,
-                    "session_id": SESSION_ID,
-                    "speaker_id": segment["speaker_id"],
-                    "clip_ts": round(segment.get("ts", 0.0), 2),
-                    "raw_text": text,
-                    "subject": "",
-                    "predicate": "",
-                    "value": None,
-                    "unit": None,
-                    "status": "detected",
-                    "verdict": None,
-                    "source": None,
-                },
-            })
-        else:
+        if not segment.get("is_final"):
             event_bus.publish({
                 "type": "partial",
                 "speaker_id": segment["speaker_id"],
                 "text": text,
                 "ts": round(segment.get("ts", 0.0), 2),
             })
+            return
+
+        # Process check-worthiness + verification off the recv path so we don't
+        # block the next incoming transcription chunk.
+        asyncio.create_task(self._process_finalized(segment, text))
+
+    async def _process_finalized(self, segment: dict, text: str) -> None:
+        speaker_id = segment["speaker_id"]
+        clip_ts = round(segment.get("ts", 0.0), 2)
+
+        try:
+            detection = await gemini_flash.detect(text)
+        except Exception:
+            log.exception("Flash.detect crashed for text=%r", text)
+            detection = {"is_checkworthy": False}
+
+        if not detection.get("is_checkworthy"):
+            # Drop non-claims silently — UI is reserved for fact-checkable claims.
+            log.debug("dropped non-claim from %s: %r", speaker_id, text)
+            return
+
+        claim = Claim(
+            session_id=SESSION_ID,
+            speaker_id=speaker_id,
+            clip_ts=clip_ts,
+            raw_text=text,
+            subject=str(detection.get("subject") or "").strip(),
+            predicate=str(detection.get("predicate") or "").strip(),
+            value=detection.get("value") or None,
+            unit=str(detection.get("unit") or "").strip() or None,
+            status="detected",
+        )
+
+        # Push the freshly-detected claim immediately so the UI shows a
+        # "researching..." card while verification runs.
+        event_bus.publish({"type": "claim", "claim": self._claim_dict(claim)})
+
+        try:
+            claim, hit = await verifier.verify(claim)
+        except Exception:
+            log.exception("verifier crashed for claim=%r", claim.id)
+            return
+
+        # Push the verified update (same id → UI replaces the in-place card).
+        event_bus.publish({"type": "claim", "claim": self._claim_dict(claim)})
+
+    @staticmethod
+    def _claim_dict(claim: Claim) -> dict:
+        return {
+            "id": claim.id,
+            "session_id": claim.session_id,
+            "speaker_id": claim.speaker_id,
+            "clip_ts": claim.clip_ts,
+            "raw_text": claim.raw_text,
+            "subject": claim.subject,
+            "predicate": claim.predicate,
+            "value": claim.value,
+            "unit": claim.unit,
+            "status": claim.status,
+            "verdict": claim.verdict,
+            "source": claim.source,
+            "confidence": claim.confidence,
+            "explanation": claim.explanation,
+            "time_to_verdict_ms": claim.time_to_verdict_ms,
+        }
 
 
 _singleton: Optional[Orchestrator] = None

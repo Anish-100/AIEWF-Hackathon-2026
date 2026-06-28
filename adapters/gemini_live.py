@@ -30,6 +30,7 @@ log = logging.getLogger(__name__)
 
 _SENTENCE_SPLIT = re.compile(r"(.+?[\.\!\?])(\s+|$)", re.DOTALL)
 _SILENCE_FLUSH_SECONDS = 1.2  # if no new transcription text for this long, flush buffer
+_STALL_AFTER_SECONDS = 5.0    # send active but no recv messages → session is stalled
 
 OnSegment = Callable[[dict], Awaitable[None]]
 # segment: {"speaker_id": str, "text": str, "is_final": bool, "ts": float}
@@ -59,8 +60,14 @@ class LiveSession:
         self._send_queue: asyncio.Queue[Optional[_PendingAudio]] = asyncio.Queue(maxsize=1024)
         self._buffer: str = ""
         self._last_text_at: float = 0.0
+        self._last_send_at: float = 0.0
+        self._last_recv_at: float = 0.0
         self._started_at: float = 0.0
         self._stop = asyncio.Event()
+        # Set when the session is no longer usable (stall, server-side close, or
+        # crash). Orchestrator polls this in _get_or_open_session and replaces
+        # dead sessions with fresh ones on the next audio frame.
+        self.dead = asyncio.Event()
         self._tasks: list[asyncio.Task] = []
 
     async def start(self) -> None:
@@ -87,9 +94,11 @@ class LiveSession:
         self._session_cm = self._client.aio.live.connect(model=self.model, config=live_cfg)
         self._session = await self._session_cm.__aenter__()
         log.info("LiveSession[%s] connected", self.speaker_id)
+        self._last_recv_at = time.time()  # arm stall watchdog
         self._tasks.append(asyncio.create_task(self._send_loop(), name=f"live-send-{self.speaker_id}"))
         self._tasks.append(asyncio.create_task(self._recv_loop(), name=f"live-recv-{self.speaker_id}"))
         self._tasks.append(asyncio.create_task(self._silence_flush_loop(), name=f"live-flush-{self.speaker_id}"))
+        self._tasks.append(asyncio.create_task(self._stall_watchdog(), name=f"live-watchdog-{self.speaker_id}"))
 
     async def feed_audio(self, pcm: bytes) -> None:
         if self._stop.is_set():
@@ -140,6 +149,7 @@ class LiveSession:
                 await self._session.send_realtime_input(
                     audio=types.Blob(data=item.data, mime_type=mime)
                 )
+                self._last_send_at = time.time()
                 sent_chunks += 1
                 sent_bytes += len(item.data)
                 # Periodic heartbeat so we know audio is flowing TO Gemini even
@@ -163,6 +173,7 @@ class LiveSession:
         try:
             async for response in self._session.receive():
                 msg_count += 1
+                self._last_recv_at = time.time()
                 sc = getattr(response, "server_content", None)
                 # Surface EVERY server message at debug level so we can see what
                 # arrives (or stops arriving) when the user goes silent.
@@ -202,8 +213,10 @@ class LiveSession:
             raise
         except Exception:
             log.exception("LiveSession[%s] recv loop crashed after %d messages", self.speaker_id, msg_count)
+            self.dead.set()
         else:
             log.warning("LiveSession[%s] recv loop ended cleanly after %d messages — server closed the stream", self.speaker_id, msg_count)
+            self.dead.set()
 
     async def _ingest_text(self, chunk: str) -> None:
         self._buffer += chunk
@@ -220,6 +233,34 @@ class LiveSession:
         # Push partial (non-final) so the UI shows live typing too.
         if self._buffer.strip():
             await self._emit(self._buffer.strip(), is_final=False)
+
+    async def _stall_watchdog(self) -> None:
+        """Watch for the silence-stall: send loop is actively pushing audio but
+        the recv loop hasn't produced a server message in `_STALL_AFTER_SECONDS`.
+        When detected, mark the session dead so the orchestrator opens a fresh
+        one on the next audio frame.
+        """
+        try:
+            while not self._stop.is_set():
+                await asyncio.sleep(1.0)
+                if self.dead.is_set():
+                    return
+                # Only consider stalled if we've been actively sending audio.
+                now = time.time()
+                if self._last_send_at == 0 or self._last_recv_at == 0:
+                    continue
+                # Audio recently sent (within ~2s) but no server message in 5s.
+                if (now - self._last_send_at) < 2.0 and (now - self._last_recv_at) > _STALL_AFTER_SECONDS:
+                    log.warning(
+                        "LiveSession[%s] STALL detected: last_send %.1fs ago, last_recv %.1fs ago — marking dead for reconnect",
+                        self.speaker_id, now - self._last_send_at, now - self._last_recv_at,
+                    )
+                    self.dead.set()
+                    return
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            log.exception("LiveSession[%s] stall watchdog crashed", self.speaker_id)
 
     async def _silence_flush_loop(self) -> None:
         """If the buffer has held un-punctuated text past the silence window,

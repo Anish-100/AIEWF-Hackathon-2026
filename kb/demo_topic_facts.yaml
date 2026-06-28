@@ -1,0 +1,208 @@
+# Veritas demo KB — US labor market, January through June 2025.
+#
+# NOTE: values are *illustrative for demo purposes*. They are plausible but
+# should not be treated as the authoritative BLS figures. The point of this
+# KB is to give the verifier deterministic ground truth so we can demo
+# ✓ / ✗ / contradiction behaviour. Swap in real BLS releases before any
+# externally-verifiable demo.
+#
+# Subjects are canonical: "<metric> <Month YYYY>". Flash is prompted to
+# normalise to this shape so paraphrases map to the same key.
+#
+# Schema mirrors core.schemas.VerifiedFact (minus id / embedding / first_seen_ts).
+
+# --- Monthly nonfarm payrolls (jobs added, thousands) ---1
+
+- subject: "US nonfarm payrolls January 2025"
+  canonical_value: 143
+  unit: "thousand jobs"
+  verdict: "true"
+  source: "kb"
+  explanation: "BLS Employment Situation Jan 2025: payrolls rose by 143k."
+
+- subject: "US nonfarm payrolls February 2025"
+  canonical_value: 151
+  unit: "thousand jobs"
+  verdict: "true"
+  source: "kb"
+  explanation: "BLS Employment Situation Feb 2025: payrolls rose by 151k."
+
+- subject: "US nonfarm payrolls March 2025"
+  canonical_value: 228
+  unit: "thousand jobs"
+  verdict: "true"
+  source: "kb"
+  explanation: "BLS Employment Situation Mar 2025: payrolls rose by 228k."
+
+- subject: "US nonfarm payrolls April 2025"
+  canonical_value: 177
+  unit: "thousand jobs"
+  verdict: "true"
+  source: "kb"
+  explanation: "BLS Employment Situation Apr 2025: payrolls rose by 177k."
+
+- subject: "US nonfarm payrolls May 2025"
+  canonical_value: 139
+  unit: "thousand jobs"
+  verdict: "true"
+  source: "kb"
+  explanation: "BLS Employment Situation May 2025: payrolls rose by 139k."
+
+- subject: "US nonfarm payrolls June 2025"
+  canonical_value: 147
+  unit: "thousand jobs"
+  verdict: "true"
+  source: "kb"
+  explanation: "BLS Employment Situation Jun 2025: payrolls rose by 147k."
+
+# --- Unemployment rate ---
+
+- subject: "US unemployment rate January 2025"
+  canonical_value: 4.0
+  unit: "%"
+  verdict: "true"
+  source: "kb"
+  explanation: "BLS U-3 unemployment, Jan 2025."
+
+- subject: "US unemployment rate February 2025"
+  canonical_value: 4.1
+  unit: "%"
+  verdict: "true"
+  source: "kb"
+  explanation: "BLS U-3 unemployment, Feb 2025."
+
+- subject: "US unemployment rate March 2025"
+  canonical_value: 4.2
+  unit: "%"
+  verdict: "true"
+  source: "kb"
+  explanation: "BLS U-3 unemployment, Mar 2025."
+
+- subject: "US unemployment rate April 2025"
+  canonical_value: 4.2
+  unit: "%"
+  verdict: "true"
+  source: "kb"
+  explanation: "BLS U-3 unemployment, Apr 2025."
+
+- subject: "US unemployment rate May 2025"
+  canonical_value: 4.1
+  unit: "%"
+  verdict: "true"
+  source: "kb"
+  explanation: "BLS U-3 unemployment, May 2025."
+
+- subject: "US unemployment rate June 2025"
+  canonical_value: 4.1
+  unit: "%"
+  verdict: "true"
+  source: "kb"
+  explanation: "BLS U-3 unemployment, Jun 2025."
+
+# --- Labor force participation rate ---
+
+- subject: "US labor force participation rate January 2025"
+  canonical_value: 62.6
+  unit: "%"
+  verdict: "true"
+  source: "kb"
+  explanation: "BLS LFPR (16+), Jan 2025."
+
+- subject: "US labor force participation rate March 2025"
+  canonical_value: 62.5
+  unit: "%"
+  verdict: "true"
+  source: "kb"
+  explanation: "BLS LFPR (16+), Mar 2025."
+
+- subject: "US labor force participation rate June 2025"
+  canonical_value: 62.3
+  unit: "%"
+  verdict: "true"
+  source: "kb"
+  explanation: "BLS LFPR (16+), Jun 2025."
+
+# --- Average hourly earnings, year-over-year ---
+
+- subject: "US average hourly earnings year over year February 2025"
+  canonical_value: 4.0
+  unit: "%"
+  verdict: "true"
+  source: "kb"
+  explanation: "BLS AHE, all employees, YoY, Feb 2025."
+
+- subject: "US average hourly earnings year over year May 2025"
+  canonical_value: 3.9
+  unit: "%"
+  verdict: "true"
+  source: "kb"
+  explanation: "BLS AHE, all employees, YoY, May 2025."
+
+- subject: "US average hourly earnings year over year June 2025"
+  canonical_value: 3.7
+  unit: "%"
+  verdict: "true"
+  source: "kb"
+  explanation: "BLS AHE, all employees, YoY, Jun 2025."
+
+# --- Sector employment changes (thousands of jobs in the month) ---
+
+- subject: "US healthcare jobs added March 2025"
+  canonical_value: 54
+  unit: "thousand jobs"
+  verdict: "true"
+  source: "kb"
+  explanation: "BLS sector breakdown, healthcare, Mar 2025."
+
+- subject: "US manufacturing jobs change May 2025"
+  canonical_value: -8
+  unit: "thousand jobs"
+  verdict: "true"
+  source: "kb"
+  explanation: "BLS sector breakdown, manufacturing, May 2025 (net loss)."
+
+- subject: "US government jobs added April 2025"
+  canonical_value: 10
+  unit: "thousand jobs"
+  verdict: "true"
+  source: "kb"
+  explanation: "BLS sector breakdown, government, Apr 2025."
+
+- subject: "US leisure and hospitality jobs added June 2025"
+  canonical_value: 20
+  unit: "thousand jobs"
+  verdict: "true"
+  source: "kb"
+  explanation: "BLS sector breakdown, leisure and hospitality, Jun 2025."
+
+# --- JOLTS: job openings ---
+
+- subject: "US job openings April 2025"
+  canonical_value: 7.4
+  unit: "million"
+  verdict: "true"
+  source: "kb"
+  explanation: "BLS JOLTS, total job openings, Apr 2025."
+
+- subject: "US job openings May 2025"
+  canonical_value: 7.3
+  unit: "million"
+  verdict: "true"
+  source: "kb"
+  explanation: "BLS JOLTS, total job openings, May 2025."
+
+# --- Long-term unemployment + initial claims ---
+
+- subject: "US long term unemployed share June 2025"
+  canonical_value: 23.3
+  unit: "%"
+  verdict: "true"
+  source: "kb"
+  explanation: "Share of unemployed who were jobless 27+ weeks, Jun 2025."
+
+- subject: "US initial jobless claims weekly average June 2025"
+  canonical_value: 235
+  unit: "thousand"
+  verdict: "true"
+  source: "kb"
+  explanation: "DOL initial unemployment claims, 4-week trailing avg., Jun 2025."

@@ -100,12 +100,20 @@ class Memory:
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA synchronous=NORMAL")
         if _VEC_AVAILABLE:
-            try:
-                conn.enable_load_extension(True)
-                sqlite_vec.load(conn)
-                conn.enable_load_extension(False)
-            except Exception:
-                log.exception("sqlite-vec load failed; using numpy fallback")
+            # Python.org's bundled sqlite3 omits enable_load_extension; the
+            # numpy cosine path below is plenty fast for our scale, so a quiet
+            # fallback is fine. Only attempt vec loading if the C-level hook
+            # is present.
+            if hasattr(conn, "enable_load_extension"):
+                try:
+                    conn.enable_load_extension(True)
+                    sqlite_vec.load(conn)
+                    conn.enable_load_extension(False)
+                except Exception:
+                    log.warning("sqlite-vec load failed; using numpy fallback")
+                    globals()["_VEC_AVAILABLE"] = False  # noqa: PLW0603
+            else:
+                log.info("sqlite3 build lacks enable_load_extension; using numpy fallback")
                 globals()["_VEC_AVAILABLE"] = False  # noqa: PLW0603
         return conn
 
