@@ -39,7 +39,16 @@ _SILENCE_FLUSH_SECONDS = 2.5
 _STALL_AFTER_SECONDS = 15.0
 
 OnSegment = Callable[[dict], Awaitable[None]]
-# segment: {"speaker_id": str, "text": str, "is_final": bool, "ts": float}
+# segment: {
+#   "speaker_id": str,
+#   "text": str,           # target language (English by default) — used downstream
+#   "source_text": str,    # raw input transcription (source language); same as text when no translation
+#   "is_final": bool,
+#   "ts": float,
+# }
+
+
+_LIVE_TRANSLATE_MODEL = "gemini-3.5-live-translate-preview"
 
 
 @dataclass
@@ -64,7 +73,16 @@ class LiveSession:
         self.sample_rate = sample_rate
         self._client = genai.Client(api_key=config.GEMINI_API_KEY)
         self._send_queue: asyncio.Queue[Optional[_PendingAudio]] = asyncio.Queue(maxsize=1024)
+        # _buffer is the *target* (English) transcription — what drives sentence
+        # boundary detection and what downstream Flash/verifier consume.
+        # _source_buffer is the parallel source-language transcription, shown
+        # in the UI alongside. When translation is off, they're identical.
         self._buffer: str = ""
+        self._source_buffer: str = ""
+        self._translate = config.USE_LIVE_TRANSLATE
+        # If translation is on, force the translate model regardless of env.
+        if self._translate:
+            self.model = _LIVE_TRANSLATE_MODEL
         self._last_text_at: float = 0.0
         self._last_send_at: float = 0.0
         self._last_recv_at: float = 0.0
@@ -103,7 +121,7 @@ class LiveSession:
                 silence_duration_ms=1500,
             ),
         )
-        live_cfg = types.LiveConnectConfig(
+        live_cfg_kwargs: dict = dict(
             response_modalities=["AUDIO"],
             input_audio_transcription=types.AudioTranscriptionConfig(),
             output_audio_transcription=types.AudioTranscriptionConfig(),
@@ -120,6 +138,14 @@ class LiveSession:
                 ))]
             ),
         )
+        if self._translate:
+            # Live Translate mode: source language auto-detected, translated to
+            # target_language_code. `input_transcription` carries the source-
+            # language text; `output_transcription` carries the translation.
+            live_cfg_kwargs["translation_config"] = types.TranslationConfig(
+                target_language_code=config.TRANSLATE_TARGET_LANG,
+            )
+        live_cfg = types.LiveConnectConfig(**live_cfg_kwargs)
         log.info("LiveSession[%s] connecting model=%s", self.speaker_id, self.model)
         # `async with` would close the session at function exit; we want the session
         # to live for as long as the speaker is in the room, so manage lifecycle ourselves.
@@ -234,12 +260,23 @@ class LiveSession:
                 if sc is None:
                     continue
                 in_tr = getattr(sc, "input_transcription", None)
-                if in_tr and getattr(in_tr, "text", None):
-                    await self._ingest_text(in_tr.text)
+                out_tr = getattr(sc, "output_transcription", None)
+                if self._translate:
+                    # In translate mode the target language (English) drives
+                    # sentence detection. We accumulate the source-language
+                    # chunks in parallel for display.
+                    if in_tr and getattr(in_tr, "text", None):
+                        self._source_buffer += in_tr.text
+                    if out_tr and getattr(out_tr, "text", None):
+                        await self._ingest_text(out_tr.text)
+                else:
+                    if in_tr and getattr(in_tr, "text", None):
+                        await self._ingest_text(in_tr.text)
                 if getattr(sc, "turn_complete", False):
                     if self._buffer.strip():
                         await self._emit(self._buffer.strip(), is_final=True)
                         self._buffer = ""
+                        self._source_buffer = ""
         except asyncio.CancelledError:
             log.info("LiveSession[%s] recv loop cancelled after %d messages", self.speaker_id, msg_count)
             raise
@@ -261,10 +298,19 @@ class LiveSession:
             sentence = m.group(1).strip()
             self._buffer = self._buffer[m.end():]
             if sentence:
-                await self._emit(sentence, is_final=True)
+                source_snapshot = self._source_buffer.strip()
+                # The source buffer accumulates across whole turns; for now we
+                # snapshot the entire source on each English sentence emit, then
+                # clear. Imperfect when source/target sentence boundaries don't
+                # align, but good enough for display.
+                self._source_buffer = ""
+                await self._emit(sentence, is_final=True, source_text=source_snapshot)
         # Push partial (non-final) so the UI shows live typing too.
         if self._buffer.strip():
-            await self._emit(self._buffer.strip(), is_final=False)
+            await self._emit(
+                self._buffer.strip(), is_final=False,
+                source_text=self._source_buffer.strip(),
+            )
 
     async def _stall_watchdog(self) -> None:
         """Watch for the silence-stall: send loop is actively pushing audio but
@@ -307,19 +353,22 @@ class LiveSession:
                     continue
                 if time.time() - self._last_text_at >= _SILENCE_FLUSH_SECONDS:
                     sentence = self._buffer.strip()
+                    source_snapshot = self._source_buffer.strip()
                     self._buffer = ""
+                    self._source_buffer = ""
                     self._last_text_at = 0.0
-                    await self._emit(sentence, is_final=True)
+                    await self._emit(sentence, is_final=True, source_text=source_snapshot)
         except asyncio.CancelledError:
             raise
         except Exception:
             log.exception("LiveSession[%s] silence flush loop crashed", self.speaker_id)
 
-    async def _emit(self, text: str, *, is_final: bool) -> None:
+    async def _emit(self, text: str, *, is_final: bool, source_text: str = "") -> None:
         try:
             await self.on_segment({
                 "speaker_id": self.speaker_id,
                 "text": text,
+                "source_text": source_text or text,
                 "is_final": is_final,
                 "ts": time.time() - self._started_at,
             })

@@ -16,8 +16,12 @@ from typing import Optional
 
 import config
 from adapters import gemini_flash, gemini_live, livekit_audio
-from core import contradiction, event_bus, memory, metrics, research_queue, verifier
+from core import contradiction, end_of_session, event_bus, memory, metrics, research_queue, verifier
 from core.schemas import Claim
+
+# How long the room can be empty before we declare the conversation over and
+# kick off the end-of-session distiller.
+_AUTOEND_AFTER_SECONDS = 30.0
 
 log = logging.getLogger(__name__)
 
@@ -36,6 +40,9 @@ class Orchestrator:
         # LiveSession reconnects after a mute or stall.
         self.session_started_at: float = 0.0
         self._speakers_seen: set[str] = set()
+        self._active_speakers: set[str] = set()
+        self._autoend_task: Optional[asyncio.Task] = None
+        self._distilled: bool = False
         self._contradiction = contradiction.ContradictionChecker()
 
     async def run(self) -> None:
@@ -64,9 +71,14 @@ class Orchestrator:
                 stop=self._stop,
             )
         finally:
+            self._cancel_autoend()
             if config.USE_ANTIGRAVITY:
                 await research_queue.stop()
             await self._close_all_sessions()
+            # Make sure we distill at least once per run, even if the auto-end
+            # timer didn't fire (server shut down before the empty-room window
+            # elapsed). Safe: _distill_now is idempotent via self._distilled.
+            await self._distill_now(reason="orchestrator-stopped")
             try:
                 memory.get_memory().end_session(self.session_id)
             except Exception:
@@ -88,6 +100,15 @@ class Orchestrator:
             "speaker_id": speaker_id,
             "kind": kind,
         })
+        # Active-speakers bookkeeping for auto-end. We track "joined" / "left"
+        # only; muted/unmuted leaves the participant in the room.
+        if kind == "joined":
+            self._active_speakers.add(speaker_id)
+            self._cancel_autoend()  # someone showed up → don't end yet
+        elif kind == "left":
+            self._active_speakers.discard(speaker_id)
+            if not self._active_speakers:
+                self._schedule_autoend()
         # Close the session on `left` (participant gone) or `muted` (audio paused
         # → Gemini Live will stall anyway). The next audio frame after rejoin /
         # unmute opens a fresh session via _get_or_open_session.
@@ -123,6 +144,48 @@ class Orchestrator:
         if sess:
             await sess.aclose()
 
+    # --- session lifecycle: auto-end + distill -----------------------------
+
+    def _schedule_autoend(self) -> None:
+        """Start (or restart) the autoend countdown. If nobody rejoins within
+        `_AUTOEND_AFTER_SECONDS`, mark the session ended and kick off the
+        end-of-session distiller in the background."""
+        self._cancel_autoend()
+        self._autoend_task = asyncio.create_task(self._autoend_after_delay(), name="autoend")
+        log.info("orchestrator: room empty — scheduled auto-end in %ds", int(_AUTOEND_AFTER_SECONDS))
+
+    def _cancel_autoend(self) -> None:
+        t = self._autoend_task
+        if t and not t.done():
+            t.cancel()
+        self._autoend_task = None
+
+    async def _autoend_after_delay(self) -> None:
+        try:
+            await asyncio.sleep(_AUTOEND_AFTER_SECONDS)
+        except asyncio.CancelledError:
+            return
+        if self._active_speakers:
+            return  # someone rejoined just in time
+        log.info("orchestrator: room still empty after %ds — distilling", int(_AUTOEND_AFTER_SECONDS))
+        await self._distill_now(reason="auto-end")
+
+    async def _distill_now(self, *, reason: str) -> None:
+        if self._distilled:
+            return
+        self._distilled = True
+        event_bus.publish({"type": "session_ended", "session_id": self.session_id, "reason": reason})
+        try:
+            n = await end_of_session.distill_session(self.session_id)
+            log.info("orchestrator: distill wrote %d facts", n)
+            event_bus.publish({"type": "distilled", "session_id": self.session_id, "new_facts": n})
+            try:
+                metrics.publish_memory_size(memory.get_memory().size())
+            except Exception:
+                pass
+        except Exception:
+            log.exception("orchestrator: distill failed")
+
     async def _close_all_sessions(self) -> None:
         async with self._sessions_lock:
             sessions = list(self._sessions.values())
@@ -143,6 +206,7 @@ class Orchestrator:
 
     async def _handle_segment(self, segment: dict) -> None:
         text = (segment.get("text") or "").strip()
+        source_text = (segment.get("source_text") or text).strip()
         if not text:
             return
         if not segment.get("is_final"):
@@ -150,15 +214,16 @@ class Orchestrator:
                 "type": "partial",
                 "speaker_id": segment["speaker_id"],
                 "text": text,
+                "source_text": source_text,
                 "ts": self._now_ts(),
             })
             return
 
         # Process check-worthiness + verification off the recv path so we don't
         # block the next incoming transcription chunk.
-        asyncio.create_task(self._process_finalized(segment, text))
+        asyncio.create_task(self._process_finalized(segment, text, source_text))
 
-    async def _process_finalized(self, segment: dict, text: str) -> None:
+    async def _process_finalized(self, segment: dict, text: str, source_text: str) -> None:
         speaker_id = segment["speaker_id"]
         clip_ts = self._now_ts()
 
@@ -178,19 +243,28 @@ class Orchestrator:
             "type": "transcript",
             "speaker_id": speaker_id,
             "text": text,
+            "source_text": source_text,
             "clip_ts": clip_ts,
         })
 
         try:
-            detection = await gemini_flash.detect(text)
+            detections = await gemini_flash.detect(text)
         except Exception:
             log.exception("Flash.detect crashed for text=%r", text)
-            detection = {"is_checkworthy": False}
+            detections = []
 
-        if not detection.get("is_checkworthy"):
+        if not detections:
             log.info("orchestrator: dropped non-claim from %s: %r", speaker_id, text)
             return
 
+        log.info(
+            "orchestrator: Flash found %d claim(s) in %r from %s",
+            len(detections), text, speaker_id,
+        )
+        for detection in detections:
+            await self._process_one_claim(detection, speaker_id=speaker_id, clip_ts=clip_ts, raw_text=text)
+
+    async def _process_one_claim(self, detection: dict, *, speaker_id: str, clip_ts: float, raw_text: str) -> None:
         # Flash said it's a fact-checkable claim → it counts toward coverage.
         metrics.note_checkworthy()
         metrics.publish()
@@ -199,7 +273,7 @@ class Orchestrator:
             session_id=self.session_id,
             speaker_id=speaker_id,
             clip_ts=clip_ts,
-            raw_text=text,
+            raw_text=raw_text,
             subject=str(detection.get("subject") or "").strip(),
             predicate=str(detection.get("predicate") or "").strip(),
             value=detection.get("value") or None,
@@ -221,7 +295,7 @@ class Orchestrator:
         event_bus.publish({"type": "claim", "claim": self._claim_dict(claim)})
         log.info(
             "orchestrator: claim from %s text=%r → status=%s verdict=%s source=%s",
-            speaker_id, text, claim.status, claim.verdict, claim.source,
+            speaker_id, raw_text, claim.status, claim.verdict, claim.source,
         )
 
         # Verifier finished → record hit/miss and time-to-verdict.

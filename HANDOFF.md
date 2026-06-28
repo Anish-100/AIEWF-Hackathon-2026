@@ -35,10 +35,28 @@ If we ever want to re-enable Antigravity (e.g. for prize-track points or for cla
 - Do **NOT** set `response_mime_type` — deprecated, conflicts with `response_format`
 - `response_format` is a raw JSON Schema; the OpenAI-style `{"type":"json_schema",...}` wrapper is rejected
 
+- **Phase 7 (UI polish + finishing):** ✅
+  - Fixed clip_ts so timestamps are **session-relative** and survive LiveSession reconnects (was per-LiveSession before — reset on every mute / stall).
+  - Added a ticking elapsed-time badge on RESEARCHING cards (`⌛ RESEARCHING 7s` updates every second client-side).
+  - Bilingual transcript rendering: source-language text on top, English translation on a smaller line below (only when they differ).
+  - **Auto-end + auto-distill:** when the LiveKit room has zero remote participants for 30 s, the orchestrator publishes a `session_ended` event and runs `end_of_session.distill_session(...)` automatically. Also runs on orchestrator shutdown. Idempotent.
+  - **Bilingual via Live Translate** (`gemini-3.5-live-translate-preview`) — see below.
+
+### Bilingual (Gemini Live Translate)
+
+`adapters/gemini_live.py` now opens a Live session with `translation_config(target_language_code="en")` whenever `USE_LIVE_TRANSLATE=true` (default true). The session returns BOTH:
+- `input_transcription` — source-language text (Hindi, Spanish, whatever)
+- `output_transcription` — English translation
+
+The English drives sentence-boundary detection and the entire downstream pipeline (Flash, verifier, contradiction). Source text is carried as `segment["source_text"]` → orchestrator → `transcript` event → UI shows both lines.
+
+To test: speak in any of ~70 languages. UI shows e.g. `बेरोज़गारी मई में 4.1 प्रतिशत थी → Unemployment in May was 4.1 percent` then runs the claim card pipeline on the English. Cross-language contradictions work (alex in English, bob in Hindi, both saying conflicting values).
+
+Falls back to `gemini-3.1-flash-live-preview` if `USE_LIVE_TRANSLATE=false`.
+
 ### What's left
 
-- **Phase 7 — UI polish for the live catch.** (UI is in good shape; squeeze-out polish if time permits.)
-- **Phase 8 — Rehearse + record.**
+- **Phase 8 — Rehearse + record.** Just the human-only steps: rehearse 5x, record the 1-minute submission video, push the repo public, fill in the submission form.
 
 ### Known caveats (do not chase unless they bite us live)
 

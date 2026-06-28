@@ -3,6 +3,13 @@
 **AI Engineer World's Fair Hackathon 2026 · Cerebral Valley**
 Theme: **Continual Learning** · Tracks: **Gemini 3.5** + **LiveKit**
 
+Gemini 3.5 features used: **Live Translate API** (bilingual transcription),
+**2.5 Flash** (claim detection with structured output), **Google Search
+grounding** (web research on cache misses), **embeddings** (subject vector
+lookups). The Interactions API + Antigravity agent is also wired (see
+`HANDOFF.md`) but disabled by default in favor of Search grounding for
+latency reasons.
+
 Two speakers join a LiveKit room. A silent agent listens, transcribes both,
 checks every factual claim in real time against a persistent local memory,
 fires loud banners when speakers contradict each other or themselves, and
@@ -22,8 +29,15 @@ continual-learning moat.
 3. **Contradiction beat.** Alex says 4.1%, then later says 5.0% — orange
    `⚠ SAME-SPEAKER CONTRADICTION` banner. Bob says 180k payrolls when alex
    said 228k — `⚠ CROSS-SPEAKER CONTRADICTION` banner.
-4. **Kill the process and restart.** Memory survives on disk. Replay → still
+4. **Bilingual beat.** Bob speaks the same kind of claim in Hindi (or any of
+   70+ languages). Transcript shows the original *and* the live English
+   translation, the pipeline runs on the English, and the contradiction
+   detector still fires — including across languages.
+5. **Kill the process and restart.** Memory survives on disk. Replay → still
    instant hits.
+6. **Walk away from the room.** 30s after all participants leave, the
+   orchestrator auto-ends the session and runs the end-of-session distiller,
+   permanently adding any newly-extracted facts to memory.
 
 Two metrics are on screen and move correctly: **coverage ↑** and **mean
 time-to-verdict ↓**.
@@ -72,8 +86,12 @@ The full stage runbook is in [`scripts/demo_cold_vs_warm.md`](scripts/demo_cold_
 - **LiveKit Agents (Python)** — joins the room as `veritas-agent`, subscribes
   to every remote participant's audio track, attributes audio to the
   participant `identity` (no diarization).
-- **Gemini Live API** (`gemini-3.1-flash-live-preview`) — one streaming session
-  per speaker. Mute-aware: auto-reconnects on silence-stall.
+- **Gemini Live Translate API** (`gemini-3.5-live-translate-preview`) — one
+  streaming session per speaker, with `translation_config(target_language_code="en")`.
+  Returns both source-language transcript (UI display) and English translation
+  (drives Flash + verifier + contradiction). Auto-detects 70+ source languages.
+  Mute-aware: auto-reconnects on silence-stall. Falls back to
+  `gemini-3.1-flash-live-preview` if `USE_LIVE_TRANSLATE=false`.
 - **Gemini 2.5 Flash** — strict-JSON claim detection via `response_schema`.
 - **Gemini embeddings** + numpy cosine — sub-2ms KB lookups at our scale (26
   KB facts + arbitrary number of session-discovered facts).
@@ -88,7 +106,8 @@ The full stage runbook is in [`scripts/demo_cold_vs_warm.md`](scripts/demo_cold_
   transcript through Flash with conversational context, extracts durable
   facts with provenance (`source_session_id`, `source_speaker`,
   `supporting_quote`), writes them back. Each session permanently grows the
-  KB.
+  KB. **Auto-triggered** 30 s after all participants leave the LiveKit room
+  (or on orchestrator shutdown).
 - **Contradiction checker** — intra-session, requires canonical subject
   equality AND value conflict; tags `same_speaker` / `cross_speaker`.
 
@@ -171,8 +190,10 @@ SIM_THRESHOLD=0.82
 SUBJECT_MATCH_THRESHOLD=0.85
 VALUE_TOLERANCE=0.0
 MEMORY_DB_PATH=./veritas_memory.db
-DEMO_MODE=warm                 # warm = seeded memory; cold = empty
-USE_ANTIGRAVITY=false          # true = Gemini + Search runs research on cache misses
+DEMO_MODE=warm                  # warm = seeded memory; cold = empty
+USE_ANTIGRAVITY=false           # true = Gemini + Search runs research on cache misses
+USE_LIVE_TRANSLATE=true         # true = bilingual transcription via Live Translate
+TRANSLATE_TARGET_LANG=en        # downstream pipeline lang (default English)
 ```
 
 ---

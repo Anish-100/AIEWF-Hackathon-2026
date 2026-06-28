@@ -41,3 +41,8 @@ VALUE_TOLERANCE = _get_float("VALUE_TOLERANCE", 0.0)
 MEMORY_DB_PATH = _get("MEMORY_DB_PATH", "./veritas_memory.db")
 DEMO_MODE = _get("DEMO_MODE", "warm")
 USE_ANTIGRAVITY = _get_bool("USE_ANTIGRAVITY", False)
+# Use the gemini-3.5-live-translate-preview model with translation_config.
+# When True, the UI shows both source-language transcript and English translation,
+# and the rest of the pipeline (Flash, verifier, contradiction) runs on the English.
+USE_LIVE_TRANSLATE = _get_bool("USE_LIVE_TRANSLATE", True)
+TRANSLATE_TARGET_LANG = _get("TRANSLATE_TARGET_LANG", "en")

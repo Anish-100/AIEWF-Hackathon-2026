@@ -292,7 +292,25 @@
       row.appendChild(chip(t.speaker_id, "", colorForSpeaker(t.speaker_id)));
       const text = document.createElement("div");
       text.className = "t-text";
-      text.textContent = t.text;
+      // Bilingual: show source-language text on top, translation as a smaller
+      // line below it when the two differ. When source == text (no translation
+      // happened, e.g. speaker was already in target language) we just show
+      // the one line.
+      const source = (t.source_text || t.text || "").trim();
+      const target = (t.text || "").trim();
+      if (source && source !== target) {
+        const sLine = document.createElement("div");
+        sLine.textContent = source;
+        text.appendChild(sLine);
+        const tLine = document.createElement("div");
+        tLine.textContent = "→ " + target;
+        tLine.style.fontSize = "12px";
+        tLine.style.opacity = "0.75";
+        tLine.style.marginTop = "2px";
+        text.appendChild(tLine);
+      } else {
+        text.textContent = target;
+      }
       const ts = document.createElement("div");
       ts.className = "t-ts";
       ts.textContent = `${(t.clip_ts ?? 0).toFixed(1)}s`;
