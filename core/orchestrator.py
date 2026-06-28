@@ -15,7 +15,7 @@ from typing import Optional
 
 import config
 from adapters import gemini_flash, gemini_live, livekit_audio
-from core import contradiction, event_bus, memory, metrics, verifier
+from core import contradiction, event_bus, memory, metrics, research_queue, verifier
 from core.schemas import Claim
 
 log = logging.getLogger(__name__)
@@ -47,6 +47,9 @@ class Orchestrator:
             metrics.publish_memory_size(memory.get_memory().size())
         except Exception:
             log.exception("orchestrator: failed to publish initial memory size")
+        # Start the async research worker (no-op unless USE_ANTIGRAVITY=true).
+        if config.USE_ANTIGRAVITY:
+            await research_queue.start()
         try:
             await livekit_audio.run_room_subscriber(
                 on_audio_frame=self._handle_audio,
@@ -54,6 +57,8 @@ class Orchestrator:
                 stop=self._stop,
             )
         finally:
+            if config.USE_ANTIGRAVITY:
+                await research_queue.stop()
             await self._close_all_sessions()
             try:
                 memory.get_memory().end_session(self.session_id)
@@ -214,6 +219,11 @@ class Orchestrator:
         except Exception:
             pass
 
+        # MISS path: enqueue async research. The card sits as ⌛ RESEARCHING
+        # in the UI until research_queue resolves it via _on_research_resolved.
+        if not hit:
+            research_queue.enqueue(claim, self._on_research_resolved)
+
         # Intra-session contradiction scan (same-speaker / cross-speaker).
         try:
             conflict = self._contradiction.record_and_check(claim)
@@ -237,6 +247,24 @@ class Orchestrator:
                 "ts_b": conflict.ts_b,
                 "explanation": conflict.explanation,
             }})
+
+    async def _on_research_resolved(self, claim: Claim, result) -> None:
+        """Called by research_queue when Antigravity finishes a claim.
+        Republishes the claim (UI flips ⌛ → ✓/✗), updates metrics,
+        and refreshes the on-screen memory size."""
+        event_bus.publish({"type": "claim", "claim": self._claim_dict(claim)})
+        log.info(
+            "orchestrator: research resolved for %s → status=%s verdict=%s source=%s",
+            claim.id, claim.status, claim.verdict, claim.source,
+        )
+        # If the research succeeded, count it as a verdict for the metrics.
+        if result is not None:
+            metrics.note_verdict(hit=True, time_to_verdict_ms=claim.time_to_verdict_ms)
+            metrics.publish()
+        try:
+            metrics.publish_memory_size(memory.get_memory().size())
+        except Exception:
+            pass
 
     @staticmethod
     def _claim_dict(claim: Claim) -> dict:

@@ -173,7 +173,7 @@ After **Phase 2** we have a demoable fallback. Phases 3–4 are the moat (never 
 
 **Accept:** Speak a known check-worthy claim → ✓/✗ card appears within ~1.5s, source="kb".
 
-### Phase 3 — Persistent memory + embeddings  *(cut: never — this is the moat)*
+### Phase 3 — Persistent memory + embeddings  *(cut: never — this is the moat)*11
 
 **Write:**
 - `core/memory.py`: SQLite at `MEMORY_DB_PATH`. Table `verified_facts(...)` + `sqlite-vec` virtual table for embeddings. `put`, `get`, `vector_search`, `facts_by_subject`, `touch`. Numpy fallback if `sqlite-vec` unavailable.

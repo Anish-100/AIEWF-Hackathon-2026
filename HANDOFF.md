@@ -22,11 +22,22 @@
 
 - **Phase 4 (Contradiction detection):** ✅ same-speaker + cross-speaker. `core/contradiction.py` with `ContradictionChecker` (in-memory per-session log); wired into orchestrator after verify; UI banner already in `server/static/index.html`. 6 unit tests pass. Note: KB-conflict claims are *not* surfaced as banners (the red ✗ card is already the signal); banners are reserved for intra-session speaker-vs-speaker conflicts.
 - **Phase 5 (Metrics + runbook):** ✅ live coverage / mean-TTV / memory-hits / contradictions counters move on every claim. `core/metrics.py` exposes `note_checkworthy / note_verdict / note_contradiction / publish / publish_memory_size`; orchestrator calls them at each step. `scripts/demo_cold_vs_warm.md` is the stage runbook for the cold→warm proof, with the contradiction-beat appended.
+- **Phase 6 (Async web research):** ✅ working end-to-end. `adapters/antigravity.py` (kept the filename; implementation is **Gemini Flash + Google Search grounding**, not Antigravity). `core/research_queue.py` runs a single background worker that resolves misses, writes the new fact back to memory with `source="web"`, republishes the claim card. Gated on `USE_ANTIGRAVITY=true` (default false). Per-call latency **~5-10 s** (verified: 7.7s unemployment lookup, 4.4s NVIDIA revenue).
+
+### Why not Antigravity?
+
+We originally wired Antigravity via the Interactions API. It works (one verified end-to-end call against `agent="antigravity-preview-05-2026"`, returned a sourced verdict in 28s). But on subsequent calls it took 60-120s — the agentic loop (browse → write code → execute) is overkill for "look up one number on the web." Swapped to Gemini Flash with `types.Tool(google_search=types.GoogleSearch())` which uses Google's index directly. Same memory write-back, same UI flow, ~15x faster.
+
+If we ever want to re-enable Antigravity (e.g. for prize-track points or for claims that need code execution), the working call shape was:
+- `client.aio.interactions.create(agent="antigravity-preview-05-2026", input=..., environment={"type":"remote"}, store=True, response_format=<json_schema>, system_instruction=...)`
+- `environment` is **required** every call (pass `{"type":"remote"}` on first, reuse `environment_id` after)
+- `store=True` is **required** (API rejects `store=False`)
+- Do **NOT** set `response_mime_type` — deprecated, conflicts with `response_format`
+- `response_format` is a raw JSON Schema; the OpenAI-style `{"type":"json_schema",...}` wrapper is rejected
 
 ### What's left
 
-- **Phase 6 — Async research via Gemini Interactions API → Antigravity** (the stretch / first-to-cut).
-- **Phase 7 — UI polish for the live catch.** (UI is already in good shape after Phase 4; this is squeeze-out polish if time permits.)
+- **Phase 7 — UI polish for the live catch.** (UI is in good shape; squeeze-out polish if time permits.)
 - **Phase 8 — Rehearse + record.**
 
 ### Known caveats (do not chase unless they bite us live)

@@ -294,11 +294,12 @@
       }
     }
 
-    function verdictGlyph(v) {
+    function verdictGlyph(v, elapsedMs) {
       if (v === "true") return "✓ TRUE";
       if (v === "false") return "✗ FALSE";
       if (v === "unverifiable") return "? UNVERIFIABLE";
-      return "⌛ RESEARCHING";
+      const secs = elapsedMs != null ? Math.floor(elapsedMs / 1000) : 0;
+      return `⌛ RESEARCHING ${secs}s`;
     }
     function verdictKey(c) {
       if (c.verdict === "true") return "true";
@@ -307,12 +308,28 @@
       return "researching";
     }
 
+    // Ticking timer for cards still in researching state. claimAppearedAt
+    // keyed by claim id; each second we recompute the badge for any card
+    // whose verdict hasn't been set yet.
+    const claimAppearedAt = new Map();
+    setInterval(() => {
+      const now = Date.now();
+      for (const [id, node] of claimNodes.entries()) {
+        if (!node.classList.contains("verdict-researching")) continue;
+        const t0 = claimAppearedAt.get(id);
+        if (!t0) continue;
+        const badge = node.querySelector(".verdict-badge");
+        if (badge) badge.textContent = verdictGlyph(null, now - t0);
+      }
+    }, 1000);
+
     function renderClaim(c) {
       let node = claimNodes.get(c.id);
       const isNew = !node;
       if (isNew) {
         node = document.createElement("div");
         claimNodes.set(c.id, node);
+        claimAppearedAt.set(c.id, Date.now());
       }
       const vKey = verdictKey(c);
       node.className = "card verdict-" + vKey;
@@ -320,7 +337,10 @@
 
       const badge = document.createElement("div");
       badge.className = "verdict-badge " + vKey;
-      badge.textContent = verdictGlyph(c.verdict);
+      const elapsedMs = vKey === "researching"
+        ? (Date.now() - (claimAppearedAt.get(c.id) || Date.now()))
+        : null;
+      badge.textContent = verdictGlyph(c.verdict, elapsedMs);
       node.appendChild(badge);
 
       const row = document.createElement("div");
