@@ -7,14 +7,16 @@
 ## Where we are right now
 
 - **Phase 0 (Scaffold):** ✅ done and verified.
-- **Phase 1 (Audio spine):** 🚧 in progress.
-  - `core/event_bus.py` ✅ written
-  - `adapters/livekit_audio.py` ✅ written (uses `rtc.Room` directly, not the worker framework)
-  - `adapters/gemini_live.py` ⏳ next
-  - `core/orchestrator.py` v1 ⏳ next
-  - `scripts/play_clip.py` ⏳ next
-  - `server/app.py` refactor (subscribe to event bus, gate fake events behind env) ⏳ next
+- **Phase 1 (Audio spine):** ✅ working end-to-end with a real LiveKit Meet client + real Gemini Live session. Finalized sentences appear in the UI tagged by speaker identity.
+  - `core/event_bus.py`, `adapters/livekit_audio.py`, `adapters/gemini_live.py`, `core/orchestrator.py`, `scripts/play_clip.py`, refactored `server/app.py` — all written.
+  - Diagnostic logs (send heartbeat + per-recv message) are in `adapters/gemini_live.py` and should stay until Phase 2 lands.
+  - **Known caveat — DO NOT spend more time trying to "fix" it:** Gemini Live's automatic VAD declares the user's turn over on each silence and stops processing further audio. Disabling VAD broke transcription entirely. We tried `turn_coverage=TURN_INCLUDES_ALL_INPUT` + `activity_handling=NO_INTERRUPTION` + a "stay silent" system instruction — improves things but doesn't fully solve. **Workaround that actually works:** the user rejoins the LiveKit room → new track_subscribed event → new LiveSession is opened, and transcription works again for one round. For the demo, plan around: speaker rejoins between rounds, OR each "round" is a single continuous monologue. Combining multiple short utterances within one Live session is **not reliable** today.
 - **Phases 2–8:** not started; see `PLAN.md` §Phases.
+
+### Future improvements parked (do not chase yet)
+
+- **Combine multiple finalized statements into a context window** before sending to the Phase 2 claim detector — gives Flash more pronoun/anaphora context ("their revenue" → resolved subject). Leave for after the v1 demo works.
+- **Reconnect Gemini Live session on silence-stall** to handle the rejoin caveat automatically — would need to detect the stall (no recv messages for N seconds while send heartbeats continue), close, and re-open. Defer until/unless the rejoin workaround becomes a demo problem.
 
 ## What is built and verified
 

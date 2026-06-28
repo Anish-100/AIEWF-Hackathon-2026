@@ -159,6 +159,10 @@ After **Phase 2** we have a demoable fallback. Phases 3–4 are the moat (never 
 
 ### Phase 2 — Detection + curated KB + fast verdicts  *(cut: never)*
 
+> **Confirmed direction:** keep Phase 1 as the pure transcription stage and do claim detection in a **separate** Gemini Flash call here. We tried collapsing transcription + detection into one Gemini Live session and it doesn't work — Live's turn-taking semantics fight against continuous transcription. Architectural rule: **Live = audio→text, Flash = text→claim**. Never combine.
+>
+> **Future note (parked):** combine N most recent finalized sentences (per-speaker rolling window) before sending to Flash, so pronoun/anaphora resolution works ("their revenue" → "Q3 2025 revenue"). Skip for v1.
+
 **Write:**
 - `adapters/gemini_flash.py`: `async def detect(sentence) -> dict`. Strict JSON: `{is_checkworthy, subject, predicate, value, unit}`. Canonical, stable subject phrasing. Retry once on JSON parse failure, then drop.
 - `adapters/gemini_embed.py`: `async def embed(text) -> list[float]` with in-process LRU cache.
