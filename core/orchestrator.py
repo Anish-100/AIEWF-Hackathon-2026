@@ -12,6 +12,7 @@ import asyncio
 import logging
 import time
 import uuid
+from collections import deque
 from typing import Optional
 
 import config
@@ -22,6 +23,11 @@ from core.schemas import Claim
 # How long the room can be empty before we declare the conversation over and
 # kick off the end-of-session distiller.
 _AUTOEND_AFTER_SECONDS = 30.0
+# How many prior finalized utterances per speaker we send to Flash as context
+# alongside the current sentence. Lets the detector resolve pronouns ("it",
+# "their") and relative dates ("last month") to canonical subjects. Small
+# number — token cost is per-detect-call.
+_HISTORY_PER_SPEAKER = 2
 
 log = logging.getLogger(__name__)
 
@@ -41,6 +47,11 @@ class Orchestrator:
         self.session_started_at: float = 0.0
         self._speakers_seen: set[str] = set()
         self._active_speakers: set[str] = set()
+        # Per-speaker rolling history of recent finalized utterances. Used as
+        # prior context for Flash claim detection so pronouns/relative dates
+        # in the current sentence can be resolved against what was said just
+        # before. Bounded to _HISTORY_PER_SPEAKER entries per speaker.
+        self._speaker_history: dict[str, deque[str]] = {}
         self._autoend_task: Optional[asyncio.Task] = None
         self._distilled: bool = False
         self._contradiction = contradiction.ContradictionChecker()
@@ -109,10 +120,16 @@ class Orchestrator:
             self._active_speakers.discard(speaker_id)
             if not self._active_speakers:
                 self._schedule_autoend()
-        # Close the session on `left` (participant gone) or `muted` (audio paused
-        # → Gemini Live will stall anyway). The next audio frame after rejoin /
-        # unmute opens a fresh session via _get_or_open_session.
-        if kind in ("left", "muted"):
+        # Close the session ONLY on `left` (participant gone for good). On
+        # `muted` we deliberately leave the LiveSession open and idle —
+        # closing on every mute caused multi-speaker transcription to drop
+        # mid-utterance when one speaker toggled their mic. If a long mute
+        # actually wedges the Gemini stream, `_stall_watchdog` will mark the
+        # session dead after `_STALL_AFTER_SECONDS` and the next audio frame
+        # reopens a fresh session via `_get_or_open_session`. `unmuted` /
+        # `joined` are no-ops here for the same reason — audio resumes,
+        # session continues.
+        if kind == "left":
             await self._close_session(speaker_id)
             log.info("orchestrator: closed session for %s due to %s", speaker_id, kind)
 
@@ -247,8 +264,16 @@ class Orchestrator:
             "clip_ts": clip_ts,
         })
 
+        # Snapshot prior context BEFORE appending the current sentence so we
+        # don't feed the sentence to itself as context.
+        prior_context = list(self._speaker_history.get(speaker_id, ()))
+        history = self._speaker_history.setdefault(
+            speaker_id, deque(maxlen=_HISTORY_PER_SPEAKER),
+        )
+        history.append(text)
+
         try:
-            detections = await gemini_flash.detect(text)
+            detections = await gemini_flash.detect(text, prior_context=prior_context)
         except Exception:
             log.exception("Flash.detect crashed for text=%r", text)
             detections = []

@@ -37,6 +37,18 @@ _SILENCE_FLUSH_SECONDS = 2.5
 # long → declare dead and reconnect. Generous (15s) so a quiet pause between
 # speakers doesn't churn the session.
 _STALL_AFTER_SECONDS = 15.0
+# Session-level monologue: send active, server IS replying, but every reply is
+# `model_turn` (model speaking back) with no transcription text or turn
+# boundary for this long → mark dead and reconnect. The hard stall watchdog
+# can't catch this because recv IS happening. Only fires while audio is
+# actively being sent, so muted/idle sessions are never killed. Generous (20s)
+# so a brief drift back into transcription self-recovers without churn.
+_MONOLOGUE_AFTER_SECONDS = 20.0
+# Translate-mode fallback: how long we wait for an English translation
+# (`output_transcription`) before giving up and showing the source-language
+# text on its own. Without this, source text arriving with no matching
+# translation sits in `_source_buffer` and never gets emitted to the UI.
+_SOURCE_FALLBACK_SECONDS = 4.0
 
 OnSegment = Callable[[dict], Awaitable[None]]
 # segment: {
@@ -84,8 +96,17 @@ class LiveSession:
         if self._translate:
             self.model = _LIVE_TRANSLATE_MODEL
         self._last_text_at: float = 0.0
+        # When the LAST source-language transcription chunk arrived. Used by
+        # the silence-flush loop to emit source-only when translation is
+        # missing (see _SOURCE_FALLBACK_SECONDS).
+        self._last_source_text_at: float = 0.0
         self._last_send_at: float = 0.0
         self._last_recv_at: float = 0.0
+        # Distinct from _last_recv_at: only ticks when the server sends actual
+        # transcription text (input or output) or a turn boundary. Pure
+        # `model_turn` traffic does NOT update this — it's the signal that
+        # drives the monologue watchdog.
+        self._last_useful_recv_at: float = 0.0
         self._started_at: float = 0.0
         self._stop = asyncio.Event()
         # Set when the session is no longer usable (stall, server-side close, or
@@ -152,7 +173,9 @@ class LiveSession:
         self._session_cm = self._client.aio.live.connect(model=self.model, config=live_cfg)
         self._session = await self._session_cm.__aenter__()
         log.info("LiveSession[%s] connected", self.speaker_id)
-        self._last_recv_at = time.time()  # arm stall watchdog
+        now = time.time()
+        self._last_recv_at = now            # arm stall watchdog
+        self._last_useful_recv_at = now     # arm monologue watchdog
         self._tasks.append(asyncio.create_task(self._send_loop(), name=f"live-send-{self.speaker_id}"))
         self._tasks.append(asyncio.create_task(self._recv_loop(), name=f"live-recv-{self.speaker_id}"))
         self._tasks.append(asyncio.create_task(self._silence_flush_loop(), name=f"live-flush-{self.speaker_id}"))
@@ -261,12 +284,20 @@ class LiveSession:
                     continue
                 in_tr = getattr(sc, "input_transcription", None)
                 out_tr = getattr(sc, "output_transcription", None)
+                # Tick the "useful recv" clock for the monologue watchdog: any
+                # transcription text (input OR output) or a turn boundary
+                # counts. `model_turn`-only chatter does NOT.
+                if (in_tr and getattr(in_tr, "text", None)) \
+                        or (out_tr and getattr(out_tr, "text", None)) \
+                        or getattr(sc, "turn_complete", False):
+                    self._last_useful_recv_at = time.time()
                 if self._translate:
                     # In translate mode the target language (English) drives
                     # sentence detection. We accumulate the source-language
                     # chunks in parallel for display.
                     if in_tr and getattr(in_tr, "text", None):
                         self._source_buffer += in_tr.text
+                        self._last_source_text_at = time.time()
                     if out_tr and getattr(out_tr, "text", None):
                         await self._ingest_text(out_tr.text)
                 else:
@@ -277,6 +308,7 @@ class LiveSession:
                         await self._emit(self._buffer.strip(), is_final=True)
                         self._buffer = ""
                         self._source_buffer = ""
+                        self._last_source_text_at = 0.0
         except asyncio.CancelledError:
             log.info("LiveSession[%s] recv loop cancelled after %d messages", self.speaker_id, msg_count)
             raise
@@ -313,25 +345,49 @@ class LiveSession:
             )
 
     async def _stall_watchdog(self) -> None:
-        """Watch for the silence-stall: send loop is actively pushing audio but
-        the recv loop hasn't produced a server message in `_STALL_AFTER_SECONDS`.
-        When detected, mark the session dead so the orchestrator opens a fresh
-        one on the next audio frame.
+        """Watch for two recoverable failure modes:
+
+        1. **Silence stall** — send loop is actively pushing audio but the
+           recv loop hasn't produced ANY server message in
+           `_STALL_AFTER_SECONDS`.
+        2. **Model monologue** — send loop is pushing audio, recv IS happening,
+           but every message is `model_turn` and no transcription text or
+           turn boundary has flushed in `_MONOLOGUE_AFTER_SECONDS`. Live's
+           turn protocol suppresses `input_transcription` while the model
+           holds a turn, so we never see another finalized sentence — the
+           speaker effectively goes silent on the UI.
+
+        Both paths gate on `send_age < 2.0` so they only fire while audio is
+        ACTIVELY being sent. Muted / idle sessions are never killed — the
+        orchestrator no longer closes on mute either, so a session can sit
+        idle indefinitely and resume on unmute.
         """
         try:
             while not self._stop.is_set():
                 await asyncio.sleep(1.0)
                 if self.dead.is_set():
                     return
-                # Only consider stalled if we've been actively sending audio.
                 now = time.time()
                 if self._last_send_at == 0 or self._last_recv_at == 0:
                     continue
-                # Audio recently sent (within ~2s) but no server message in 5s.
-                if (now - self._last_send_at) < 2.0 and (now - self._last_recv_at) > _STALL_AFTER_SECONDS:
+                send_age = now - self._last_send_at
+                if send_age >= 2.0:
+                    continue  # not actively sending — silence is expected
+                # 1. Hard silence stall.
+                if (now - self._last_recv_at) > _STALL_AFTER_SECONDS:
                     log.warning(
                         "LiveSession[%s] STALL detected: last_send %.1fs ago, last_recv %.1fs ago — marking dead for reconnect",
-                        self.speaker_id, now - self._last_send_at, now - self._last_recv_at,
+                        self.speaker_id, send_age, now - self._last_recv_at,
+                    )
+                    self.dead.set()
+                    return
+                # 2. Monologue: recv is alive but useless.
+                if self._last_useful_recv_at > 0 \
+                        and (now - self._last_useful_recv_at) > _MONOLOGUE_AFTER_SECONDS:
+                    log.warning(
+                        "LiveSession[%s] MONOLOGUE detected: last_send %.1fs ago, last useful recv %.1fs ago "
+                        "(model_turn-only stream, no transcription) — marking dead for reconnect",
+                        self.speaker_id, send_age, now - self._last_useful_recv_at,
                     )
                     self.dead.set()
                     return
@@ -341,23 +397,53 @@ class LiveSession:
             log.exception("LiveSession[%s] stall watchdog crashed", self.speaker_id)
 
     async def _silence_flush_loop(self) -> None:
-        """If the buffer has held un-punctuated text past the silence window,
-        flush it as a finalized segment. Lets us emit sentences when Gemini
-        drops trailing punctuation or when the speaker pauses mid-thought."""
+        """Two flush paths, both polled every 0.3s:
+
+        1. **English silence flush.** If the English buffer has un-punctuated
+           text and no new chunks arrived in `_SILENCE_FLUSH_SECONDS`, emit
+           it. This is the main path — handles Gemini dropping trailing
+           punctuation and short utterances.
+        2. **Source-only fallback (translate mode).** If only source-language
+           text arrived (no `output_transcription` translation came back)
+           and it's been quiet for `_SOURCE_FALLBACK_SECONDS`, emit the
+           source text on its own. Without this path, source text gets
+           trapped in `_source_buffer` forever when translation flakes.
+        """
         try:
             while not self._stop.is_set():
                 await asyncio.sleep(0.3)
-                if not self._buffer.strip():
-                    continue
-                if self._last_text_at == 0:
-                    continue
-                if time.time() - self._last_text_at >= _SILENCE_FLUSH_SECONDS:
+                now = time.time()
+                # Path 1: English buffer is the primary trigger.
+                if self._buffer.strip() and self._last_text_at > 0 \
+                        and (now - self._last_text_at) >= _SILENCE_FLUSH_SECONDS:
                     sentence = self._buffer.strip()
                     source_snapshot = self._source_buffer.strip()
                     self._buffer = ""
                     self._source_buffer = ""
                     self._last_text_at = 0.0
+                    self._last_source_text_at = 0.0
                     await self._emit(sentence, is_final=True, source_text=source_snapshot)
+                    continue
+                # Path 2: translate mode, source arrived but translation didn't.
+                # Only fires when English buffer is empty so we never compete
+                # with Path 1.
+                if self._translate and self._source_buffer.strip() \
+                        and not self._buffer.strip() \
+                        and self._last_source_text_at > 0 \
+                        and (now - self._last_source_text_at) >= _SOURCE_FALLBACK_SECONDS:
+                    source = self._source_buffer.strip()
+                    self._source_buffer = ""
+                    self._last_source_text_at = 0.0
+                    # Use source as both displayed text and source_text so the
+                    # UI shows the captured speech even without a translation.
+                    # Downstream Flash detection will run on it; if the source
+                    # language is English this is fine, otherwise the detector
+                    # may not find claims — accepted trade-off vs lost text.
+                    log.info(
+                        "LiveSession[%s] source-only fallback emit (no translation): %r",
+                        self.speaker_id, source,
+                    )
+                    await self._emit(source, is_final=True, source_text=source)
         except asyncio.CancelledError:
             raise
         except Exception:
