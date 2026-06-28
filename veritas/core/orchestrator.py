@@ -1,21 +1,20 @@
-"""Stub orchestrator — wires transcript → detect → verify → contradiction → push."""
 import asyncio
 import logging
-import time
 import uuid
+
+from core import verifier, contradiction, metrics, research_queue
+from core.schemas import Claim
 
 log = logging.getLogger(__name__)
 
 _session_id = str(uuid.uuid4())
-_session_claims: list = []
+_session_claims: list[Claim] = []
 
 
 async def process_sentence(sentence: str, clip_ts: float, push_fn) -> None:
     """Entry point: one finalized sentence from STT."""
     from adapters.gemini_flash import detect_claim
     from adapters.gemini_embed import embed
-    from core.schemas import Claim
-    from core import verifier, contradiction, metrics, research_queue
 
     result = await detect_claim(sentence)
     if not result or not result.get("is_checkworthy"):
