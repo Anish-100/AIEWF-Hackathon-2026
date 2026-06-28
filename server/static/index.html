@@ -1,0 +1,280 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Veritas — live fact-check</title>
+  <style>
+    :root {
+      --bg: #ffffff;
+      --ink: #000000;
+      --rule: #1a1a1a;
+      --pastel-orange: #ffd6a5;
+      --pastel-orange-strong: #ffb07a;
+      --pastel-peach: #ffe6c7;
+      --pastel-yellow: #fff1b8;
+      --pastel-green: #c9eac3;
+      --pastel-red: #f6b6ad;
+    }
+    * { box-sizing: border-box; }
+    html, body {
+      margin: 0; padding: 0;
+      background: var(--bg);
+      color: var(--ink);
+      font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+      font-size: 15px;
+    }
+    header {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 18px 28px;
+      border-bottom: 2px solid var(--rule);
+      background: var(--bg);
+    }
+    h1 {
+      font-size: 22px; margin: 0; letter-spacing: -0.01em;
+      color: var(--ink);
+    }
+    .mode-badge {
+      font-weight: 700;
+      padding: 6px 12px;
+      background: var(--pastel-orange);
+      color: var(--ink);
+      border: 2px solid var(--rule);
+      border-radius: 4px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      font-size: 12px;
+    }
+    main {
+      display: grid;
+      grid-template-columns: 1fr 360px;
+      gap: 0;
+      min-height: calc(100vh - 64px);
+    }
+    .left { padding: 24px 28px; border-right: 2px solid var(--rule); }
+    .right { padding: 24px 28px; background: var(--bg); }
+    .section-title {
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: var(--ink);
+      margin: 0 0 12px 0;
+    }
+    #banner-slot { margin-bottom: 18px; }
+    .banner {
+      background: var(--pastel-orange-strong);
+      border: 2px solid var(--rule);
+      padding: 14px 16px;
+      margin-bottom: 10px;
+      color: var(--ink);
+      border-radius: 4px;
+    }
+    .banner .title {
+      font-weight: 800;
+      font-size: 14px;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      margin-bottom: 6px;
+    }
+    .banner .body { font-size: 14px; }
+    .card {
+      border: 2px solid var(--rule);
+      background: var(--bg);
+      color: var(--ink);
+      padding: 12px 14px;
+      margin-bottom: 10px;
+      border-radius: 4px;
+    }
+    .card .row {
+      display: flex; align-items: center; gap: 8px;
+      margin-bottom: 6px;
+    }
+    .chip {
+      display: inline-block;
+      font-weight: 700;
+      font-size: 11px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      padding: 3px 8px;
+      border: 1.5px solid var(--rule);
+      border-radius: 3px;
+      color: var(--ink);
+      background: var(--pastel-peach);
+    }
+    .chip.speaker-speaker_a { background: var(--pastel-orange); }
+    .chip.speaker-speaker_b { background: var(--pastel-yellow); }
+    .chip.status-detected   { background: var(--pastel-peach); }
+    .chip.status-researching{ background: var(--pastel-yellow); }
+    .chip.status-verified   { background: var(--pastel-green); }
+    .chip.status-flagged    { background: var(--pastel-red); }
+    .card .text { font-size: 14px; }
+    .card .meta { font-size: 12px; margin-top: 6px; opacity: 0.85; }
+    .metric {
+      border: 2px solid var(--rule);
+      padding: 14px 16px;
+      margin-bottom: 12px;
+      background: var(--bg);
+      border-radius: 4px;
+    }
+    .metric .label {
+      font-size: 11px; font-weight: 700; letter-spacing: 0.12em;
+      text-transform: uppercase; margin-bottom: 6px;
+    }
+    .metric .value {
+      font-size: 32px; font-weight: 800; letter-spacing: -0.01em;
+    }
+    .metric.highlight { background: var(--pastel-orange); }
+    button {
+      font: inherit;
+      background: var(--pastel-orange);
+      color: var(--ink);
+      border: 2px solid var(--rule);
+      padding: 8px 12px;
+      border-radius: 4px;
+      font-weight: 700;
+      cursor: pointer;
+    }
+    button:hover { background: var(--pastel-orange-strong); }
+    .empty {
+      padding: 18px;
+      text-align: center;
+      color: var(--ink);
+      border: 2px dashed var(--rule);
+      border-radius: 4px;
+      opacity: 0.7;
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>VERITAS — live fact-check</h1>
+    <div>
+      <span class="mode-badge" id="mode-badge">demo</span>
+      <span class="mode-badge" id="mem-badge" style="background:var(--pastel-peach);margin-left:8px;">memory: 0</span>
+    </div>
+  </header>
+  <main>
+    <section class="left">
+      <div id="banner-slot"></div>
+      <p class="section-title">Live claims</p>
+      <div id="claims">
+        <div class="empty">Waiting for claims…</div>
+      </div>
+    </section>
+    <aside class="right">
+      <p class="section-title">Metrics</p>
+      <div class="metric highlight">
+        <div class="label">Coverage</div>
+        <div class="value" id="m-coverage">0%</div>
+      </div>
+      <div class="metric highlight">
+        <div class="label">Mean time-to-verdict</div>
+        <div class="value" id="m-ttv">– ms</div>
+      </div>
+      <div class="metric">
+        <div class="label">Memory hits</div>
+        <div class="value" id="m-hits">0</div>
+      </div>
+      <div class="metric">
+        <div class="label">Contradictions</div>
+        <div class="value" id="m-contra">0</div>
+      </div>
+    </aside>
+  </main>
+
+  <script>
+    const claimsEl = document.getElementById("claims");
+    const bannerSlot = document.getElementById("banner-slot");
+    const modeBadge = document.getElementById("mode-badge");
+    const memBadge = document.getElementById("mem-badge");
+    let claimsSeen = 0;
+    const claimNodes = new Map();
+
+    function chip(text, kind) {
+      const s = document.createElement("span");
+      s.className = "chip " + kind;
+      s.textContent = text;
+      return s;
+    }
+
+    function renderClaim(c) {
+      let node = claimNodes.get(c.id);
+      const isNew = !node;
+      if (isNew) {
+        node = document.createElement("div");
+        node.className = "card";
+        claimNodes.set(c.id, node);
+      }
+      node.innerHTML = "";
+      const row = document.createElement("div");
+      row.className = "row";
+      row.appendChild(chip(c.speaker_id, "speaker-" + c.speaker_id));
+      row.appendChild(chip(c.status, "status-" + c.status));
+      if (c.source) row.appendChild(chip("src: " + c.source, ""));
+      if (c.verdict) row.appendChild(chip(c.verdict, c.verdict === "true" ? "status-verified" : c.verdict === "false" ? "status-flagged" : ""));
+      node.appendChild(row);
+
+      const text = document.createElement("div");
+      text.className = "text";
+      text.textContent = c.raw_text;
+      node.appendChild(text);
+
+      const meta = document.createElement("div");
+      meta.className = "meta";
+      meta.textContent = `${c.subject} · ${c.predicate} · ${c.value ?? "–"}${c.unit ?? ""} · t=${c.clip_ts}s`;
+      node.appendChild(meta);
+
+      if (isNew) {
+        if (claimsEl.querySelector(".empty")) claimsEl.innerHTML = "";
+        claimsEl.prepend(node);
+        claimsSeen += 1;
+      }
+    }
+
+    function renderContradiction(x) {
+      const b = document.createElement("div");
+      b.className = "banner";
+      const title = document.createElement("div");
+      title.className = "title";
+      title.textContent = (x.kind === "cross_speaker" ? "⚠ CROSS-SPEAKER CONTRADICTION" : "⚠ SAME-SPEAKER CONTRADICTION") + " — " + x.subject;
+      const body = document.createElement("div");
+      body.className = "body";
+      body.textContent = `${x.speaker_a_id} said ${x.value_a} at t=${x.ts_a}s · ${x.speaker_b_id} said ${x.value_b} at t=${x.ts_b}s — ${x.explanation}`;
+      b.appendChild(title);
+      b.appendChild(body);
+      bannerSlot.prepend(b);
+      while (bannerSlot.children.length > 4) bannerSlot.removeChild(bannerSlot.lastChild);
+    }
+
+    function renderMetrics(m) {
+      document.getElementById("m-coverage").textContent = Math.round((m.coverage || 0) * 100) + "%";
+      document.getElementById("m-ttv").textContent = Math.round(m.mean_time_to_verdict_ms || 0) + " ms";
+      document.getElementById("m-hits").textContent = m.memory_hits ?? 0;
+      document.getElementById("m-contra").textContent = m.contradictions ?? 0;
+    }
+
+    function connect() {
+      const proto = location.protocol === "https:" ? "wss" : "ws";
+      const ws = new WebSocket(`${proto}://${location.host}/ws`);
+      ws.onmessage = (ev) => {
+        let msg;
+        try { msg = JSON.parse(ev.data); } catch { return; }
+        if (msg.type === "hello") {
+          modeBadge.textContent = (msg.demo_mode || "demo") + " mode";
+        } else if (msg.type === "claim") {
+          renderClaim(msg.claim);
+        } else if (msg.type === "contradiction") {
+          renderContradiction(msg.contradiction);
+        } else if (msg.type === "metrics") {
+          renderMetrics(msg.metrics);
+        } else if (msg.type === "memory_size") {
+          memBadge.textContent = "memory: " + msg.size;
+        }
+      };
+      ws.onclose = () => setTimeout(connect, 1500);
+    }
+    connect();
+  </script>
+</body>
+</html>
