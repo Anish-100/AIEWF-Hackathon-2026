@@ -40,7 +40,7 @@ and is individually cuttable under time pressure (cut priority is marked per pha
 | Async research (STRETCH) | **Gemini Antigravity / Interactions API** | The slow "learning edge": resolve unknown claims in the hosted sandbox, write result back to memory. Combining with Live API = Gemini "bonus points." Cuttable. |
 | Frontend | **Minimal: FastAPI + a single static HTML/JS page over WebSocket** | The UI surfaces claim cards, contradiction alerts, and the two metrics. Keep it lean — a dashboard is NOT the product (and "dashboard as main feature" is banned). It exists to show the live catch. |
 
-**Optional / not in critical path:**
+**Optional / not in critical path:*b*
 - **MongoDB Atlas** — a legitimate swap for the memory layer (native vector search, earns the MongoDB resource). BUT it's cloud → puts hot-path lookups on the network. Only use it if you also keep a local cache for the demo, or use it purely as the *persistence backend that syncs to a local read cache*. Default to local SQLite for the demo.
 - **DigitalOcean** — optional deploy target at the very end if time remains and you want the DO prize. Demo runs locally regardless.
 - **MiniMax** — not used. No load-bearing role here; forcing it adds risk. (First-place prize includes its credits regardless of use.)
