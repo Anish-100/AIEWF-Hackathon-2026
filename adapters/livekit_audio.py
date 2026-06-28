@@ -115,6 +115,28 @@ async def run_room_subscriber(
         if task:
             task.cancel()
 
+    @room.on("track_muted")
+    def _on_track_muted(
+        publication: rtc.RemoteTrackPublication,
+        participant: rtc.RemoteParticipant,
+    ) -> None:
+        if publication.kind != rtc.TrackKind.KIND_AUDIO:
+            return
+        log.info("track_muted: speaker=%s", participant.identity)
+        if on_speaker_event:
+            _schedule(on_speaker_event("muted", participant.identity))
+
+    @room.on("track_unmuted")
+    def _on_track_unmuted(
+        publication: rtc.RemoteTrackPublication,
+        participant: rtc.RemoteParticipant,
+    ) -> None:
+        if publication.kind != rtc.TrackKind.KIND_AUDIO:
+            return
+        log.info("track_unmuted: speaker=%s", participant.identity)
+        if on_speaker_event:
+            _schedule(on_speaker_event("unmuted", participant.identity))
+
     @room.on("participant_disconnected")
     def _on_participant_disconnected(p: rtc.RemoteParticipant) -> None:
         if on_speaker_event:

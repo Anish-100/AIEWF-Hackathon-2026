@@ -55,12 +55,24 @@ class Orchestrator:
             "speaker_id": speaker_id,
             "kind": kind,
         })
-        if kind == "left":
+        # Close the session on `left` (participant gone) or `muted` (audio paused
+        # → Gemini Live will stall anyway). The next audio frame after rejoin /
+        # unmute opens a fresh session via _get_or_open_session.
+        if kind in ("left", "muted"):
             await self._close_session(speaker_id)
+            log.info("orchestrator: closed session for %s due to %s", speaker_id, kind)
 
     async def _get_or_open_session(self, speaker_id: str, sample_rate: int) -> gemini_live.LiveSession:
         async with self._sessions_lock:
             sess = self._sessions.get(speaker_id)
+            if sess is not None and sess.dead.is_set():
+                log.warning("orchestrator: existing LiveSession for %s is dead — replacing", speaker_id)
+                # Drop ref first so a concurrent caller doesn't reuse the dead one;
+                # do the close outside the lock to avoid deadlock with feed_audio.
+                self._sessions.pop(speaker_id, None)
+                _dead_sess = sess
+                sess = None
+                asyncio.create_task(_dead_sess.aclose())
             if sess is None:
                 sess = gemini_live.LiveSession(
                     speaker_id=speaker_id,
