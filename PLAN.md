@@ -22,7 +22,14 @@ Demo clip (real earnings call audio — Apple Q3 FY2025 or similar)
         → adapters/gemini_flash.py  →  {is_checkworthy, subject, predicate, value, unit}
           → core/verifier.py  (embed → SQLite+sqlite-vec vector search)
             ├─ HIT  → verdict <100ms
-            └─ MISS → status="researching" (stub)
+            └─ MISS → status="researching" → research_queue.py (async)
+                         → adapters/gemini_interactions.py
+                             client.interactions.create(
+                               model=FLASH, input=claim, tools=[{"type":"google_search"}],
+                               background=True
+                             )
+                         → poll → write VerifiedFact to memory
+                         → push update: card flips ⏳→✓/✗, now permanent in memory
           → core/contradiction.py  (new value vs session history + memory)
         → HTTP POST  →  server/app.py  (FastAPI)
           → WebSocket  →  browser  (claim cards, contradiction alert, 2 metrics)
@@ -40,7 +47,7 @@ Demo clip (real earnings call audio — Apple Q3 FY2025 or similar)
 | Memory | SQLite + `sqlite-vec`; numpy cosine fallback |
 | UI comms | Agent → HTTP POST localhost → FastAPI → WebSocket → browser |
 | Demo clip | Real earnings call (Apple Q3 FY2025); download with `yt-dlp`, trim with `ffmpeg` |
-| Antigravity | Stubbed (Phase 6 is the designated cut) |
+| Async research | Interactions API: `client.interactions.create(model=FLASH, input=claim, tools=[{"type":"google_search"}], background=True)` → poll → write to memory |
 
 ---
 
@@ -53,9 +60,10 @@ veritas/
 ├── config.py
 ├── adapters/
 │   ├── __init__.py
-│   ├── livekit_audio.py      # Agent: STT → sentence events → orchestrator
-│   ├── gemini_flash.py       # Flash: sentence → structured claim JSON
-│   └── gemini_embed.py       # Embeddings: text → float[]
+│   ├── livekit_audio.py         # Agent: STT → sentence events → orchestrator
+│   ├── gemini_flash.py          # Flash: sentence → structured claim JSON
+│   ├── gemini_embed.py          # Embeddings: text → float[]
+│   └── gemini_interactions.py   # Interactions API: claim → web research → verdict + source
 ├── core/
 │   ├── __init__.py
 │   ├── schemas.py            # Pydantic: Claim, VerifiedFact, Contradiction, SessionMetrics
@@ -162,8 +170,21 @@ Do NOT invent these. Check https://aistudio.google.com or the Gemini changelog.
 - `index.html` — two big live counters: "Coverage: 67%" and "Avg verdict: 234ms"
 - **Accept:** counters move; COLD run shows higher latency than WARM run
 
-### Phase 6 — Antigravity (SKIP unless time allows)
-- Stub in `adapters/antigravity.py` only
+### Phase 6 — Interactions API Research Worker (~45 min)
+- `adapters/gemini_interactions.py`:
+  ```python
+  interaction = client.interactions.create(
+      model=GEMINI_FLASH_MODEL,
+      input=f"Verify this claim and return JSON {{verdict, value, source, explanation}}: {claim.raw_text}",
+      tools=[{"type": "google_search"}],
+      background=True,
+  )
+  # poll interaction.id until status == "completed"
+  # parse interaction.output_text → VerifiedFact → memory.put()
+  ```
+- `core/research_queue.py` — asyncio queue; dequeues MISS claims, calls adapter, writes to memory, HTTP POSTs update to UI
+- The learning story: MISS during run → Interactions researches → writes to memory → NEXT run of same clip → instant hit, card was ⏳ now permanent ✓/✗
+- **Accept:** one unrehearsed claim resolves from ⏳ to ✓/✗ live; identical claim on replay is instant
 
 ### Phase 7 — UI Polish (~30 min)
 - Color-coded cards, status transitions ⏳→✓/✗, COLD/WARM pill, auto-dismiss contradiction banner

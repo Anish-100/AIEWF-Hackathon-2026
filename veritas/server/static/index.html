@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Veritas — Live Fact Check</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { background: #0a0a0f; color: #e2e8f0; font-family: 'Segoe UI', system-ui, sans-serif; min-height: 100vh; }
+
+    header {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 16px 28px; border-bottom: 1px solid #1e293b; background: #0d0d17;
+    }
+    header h1 { font-size: 1.25rem; font-weight: 700; letter-spacing: 0.05em; color: #7c3aed; }
+    #mode-pill {
+      font-size: 0.7rem; font-weight: 700; padding: 3px 10px;
+      border-radius: 999px; letter-spacing: 0.08em; text-transform: uppercase;
+      background: #1e293b; color: #94a3b8;
+    }
+    #mode-pill.warm { background: #14532d; color: #4ade80; }
+    #mode-pill.cold { background: #1e3a5f; color: #60a5fa; }
+
+    .metrics-bar {
+      display: flex; gap: 32px; padding: 16px 28px;
+      border-bottom: 1px solid #1e293b; background: #0f0f1a;
+    }
+    .metric { display: flex; flex-direction: column; }
+    .metric-label { font-size: 0.65rem; text-transform: uppercase; letter-spacing: 0.1em; color: #64748b; }
+    .metric-value { font-size: 2rem; font-weight: 800; font-variant-numeric: tabular-nums; color: #e2e8f0; }
+    .metric-value.coverage { color: #34d399; }
+    .metric-value.latency { color: #60a5fa; }
+
+    #contradiction-banner {
+      display: none; background: #7f1d1d; border-left: 4px solid #ef4444;
+      padding: 14px 28px; font-size: 0.9rem; line-height: 1.5;
+      animation: fadeIn 0.3s ease;
+    }
+    #contradiction-banner strong { color: #fca5a5; }
+
+    #claims { padding: 20px 28px; display: flex; flex-direction: column; gap: 10px; }
+
+    .claim-card {
+      background: #111827; border: 1px solid #1e293b; border-radius: 10px;
+      padding: 12px 16px; display: flex; align-items: center; gap: 14px;
+      animation: slideIn 0.25s ease;
+      transition: border-color 0.3s;
+    }
+    .claim-card.verified-true  { border-color: #166534; }
+    .claim-card.verified-false { border-color: #7f1d1d; }
+    .claim-card.researching    { border-color: #1e3a5f; }
+
+    .verdict-icon {
+      font-size: 1.5rem; width: 36px; text-align: center; flex-shrink: 0;
+      animation: pop 0.2s ease;
+    }
+
+    .claim-body { flex: 1; min-width: 0; }
+    .claim-subject { font-weight: 600; font-size: 0.9rem; color: #cbd5e1; margin-bottom: 2px; }
+    .claim-text    { font-size: 0.78rem; color: #64748b; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+    .claim-meta { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; flex-shrink: 0; }
+    .source-badge {
+      font-size: 0.62rem; font-weight: 700; padding: 2px 7px; border-radius: 999px;
+      text-transform: uppercase; letter-spacing: 0.07em;
+    }
+    .source-badge.kb     { background: #1e3a5f; color: #93c5fd; }
+    .source-badge.memory { background: #14532d; color: #86efac; }
+    .source-badge.web    { background: #3b1764; color: #c4b5fd; }
+    .source-badge.stub   { background: #292524; color: #78716c; }
+    .ts { font-size: 0.65rem; color: #475569; }
+
+    @keyframes slideIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+    @keyframes fadeIn  { from { opacity: 0; } to { opacity: 1; } }
+    @keyframes pop     { 0%,100% { transform: scale(1); } 50% { transform: scale(1.3); } }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>⚡ Veritas</h1>
+    <div style="display:flex;gap:12px;align-items:center">
+      <span id="conn-dot" style="width:8px;height:8px;border-radius:50%;background:#ef4444;display:inline-block"></span>
+      <span id="mode-pill">—</span>
+    </div>
+  </header>
+
+  <div class="metrics-bar">
+    <div class="metric">
+      <span class="metric-label">Coverage</span>
+      <span class="metric-value coverage" id="m-coverage">—</span>
+    </div>
+    <div class="metric">
+      <span class="metric-label">Avg Verdict</span>
+      <span class="metric-value latency" id="m-latency">—</span>
+    </div>
+    <div class="metric">
+      <span class="metric-label">Memory Hits</span>
+      <span class="metric-value" id="m-hits">—</span>
+    </div>
+    <div class="metric">
+      <span class="metric-label">Contradictions</span>
+      <span class="metric-value" style="color:#f87171" id="m-contradictions">0</span>
+    </div>
+  </div>
+
+  <div id="contradiction-banner"></div>
+  <div id="claims"></div>
+
+  <script>
+    const DEMO_MODE = "warm"; // overridden by server config eventually
+    document.getElementById('mode-pill').textContent = DEMO_MODE.toUpperCase();
+    document.getElementById('mode-pill').className = DEMO_MODE;
+
+    const claimsEl = document.getElementById('claims');
+    const cards = {};
+
+    function verdictIcon(verdict, status) {
+      if (status === 'researching' || status === 'detected') return '⏳';
+      if (verdict === 'true') return '✅';
+      if (verdict === 'false') return '❌';
+      return '❓';
+    }
+
+    function fmtTs(sec) {
+      const m = Math.floor(sec / 60);
+      const s = Math.floor(sec % 60);
+      return `${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`;
+    }
+
+    function upsertCard(claim) {
+      let card = cards[claim.id];
+      const icon = verdictIcon(claim.verdict, claim.status);
+      const cssClass = claim.status === 'verified'
+        ? (claim.verdict === 'true' ? 'verified-true' : claim.verdict === 'false' ? 'verified-false' : '')
+        : 'researching';
+
+      if (!card) {
+        card = document.createElement('div');
+        card.className = `claim-card ${cssClass}`;
+        card.innerHTML = `
+          <div class="verdict-icon">${icon}</div>
+          <div class="claim-body">
+            <div class="claim-subject">${claim.subject || '—'}</div>
+            <div class="claim-text">${claim.raw_text}</div>
+          </div>
+          <div class="claim-meta">
+            <span class="source-badge ${claim.source || 'stub'}">${claim.source || '…'}</span>
+            <span class="ts">${fmtTs(claim.clip_ts)}</span>
+          </div>`;
+        claimsEl.insertBefore(card, claimsEl.firstChild);
+        cards[claim.id] = card;
+      } else {
+        card.className = `claim-card ${cssClass}`;
+        card.querySelector('.verdict-icon').textContent = icon;
+        card.querySelector('.claim-subject').textContent = claim.subject || '—';
+        card.querySelector('.source-badge').textContent = claim.source || '…';
+        card.querySelector('.source-badge').className = `source-badge ${claim.source || 'stub'}`;
+      }
+    }
+
+    function showContradiction(c) {
+      const banner = document.getElementById('contradiction-banner');
+      banner.style.display = 'block';
+      banner.innerHTML = `<strong>⚠️ CONTRADICTION — ${c.subject}</strong><br>
+        Said <em>${c.value_a}</em> at ${fmtTs(c.ts_a)}, now says <em>${c.value_b}</em> at ${fmtTs(c.ts_b)}<br>
+        <small style="color:#fca5a5">${c.explanation}</small>`;
+      setTimeout(() => { banner.style.display = 'none'; }, 12000);
+    }
+
+    function updateMetrics(m) {
+      document.getElementById('m-coverage').textContent =
+        m.checkworthy_seen > 0 ? `${Math.round(m.coverage * 100)}%` : '—';
+      document.getElementById('m-latency').textContent =
+        m.checked > 0 ? `${Math.round(m.mean_time_to_verdict_ms)}ms` : '—';
+      document.getElementById('m-hits').textContent =
+        m.checked > 0 ? `${m.memory_hits}/${m.checked}` : '—';
+      document.getElementById('m-contradictions').textContent = m.contradictions;
+    }
+
+    function connect() {
+      const ws = new WebSocket(`ws://${location.host}/ws`);
+      ws.onopen = () => {
+        document.getElementById('conn-dot').style.background = '#4ade80';
+      };
+      ws.onclose = () => {
+        document.getElementById('conn-dot').style.background = '#ef4444';
+        setTimeout(connect, 2000);
+      };
+      ws.onmessage = (e) => {
+        const event = JSON.parse(e.data);
+        if (event.type === 'claim_detected') upsertCard(event.claim);
+        else if (event.type === 'claim_update') upsertCard(event.claim);
+        else if (event.type === 'contradiction') showContradiction(event.contradiction);
+        else if (event.type === 'metrics') updateMetrics(event.metrics);
+      };
+    }
+    connect();
+  </script>
+</body>
+</html>
