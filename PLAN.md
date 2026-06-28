@@ -15,10 +15,13 @@ Goal: build `veritas/` from scratch, Phases 0–7 in order.
 ## Architecture
 
 ```
-Demo clip (real earnings call audio — Apple Q3 FY2025 or similar)
-  → scripts/play_clip.py  (publishes WAV to LiveKit room as audio track)
-    → adapters/livekit_audio.py  (LiveKit Agent, STT via Gemini Realtime)
-      → user_input_transcribed  →  finalized sentence
+Demo clip (any audio file — MP3/MP4/WAV/etc.)
+  → scripts/play_clip.py  (ffmpeg decode → PCM → LiveKit room as audio track)
+    → adapters/livekit_audio.py  (LiveKit Agent)
+      → on_track_subscribed → rtc.AudioStream → raw PCM frames
+        → client.aio.live.connect(model=GEMINI_LIVE_MODEL)
+          → send_realtime_input(audio=Blob(pcm, "audio/pcm;rate=16000"))
+          → receive() → sc.input_transcription.text  →  finalized sentence
         → adapters/gemini_flash.py  →  {is_checkworthy, subject, predicate, value, unit}
           → core/verifier.py  (embed → SQLite+sqlite-vec vector search)
             ├─ HIT  → verdict <100ms
@@ -41,7 +44,7 @@ Demo clip (real earnings call audio — Apple Q3 FY2025 or similar)
 
 | Concern | Decision |
 |---|---|
-| STT | `google.realtime.RealtimeModel(modalities=["TEXT"], input_audio_transcription=AudioTranscriptionConfig())` — same API key as starter, proven to work |
+| STT | Direct Gemini Live API via `client.aio.live.connect()` + `send_realtime_input(audio=Blob(...))` + `sc.input_transcription.text`. Bypasses `AgentSession` entirely — Live models don't support TEXT-only modality via the agents abstraction. |
 | Claim detection | `google-genai` Flash via direct API call → strict JSON |
 | Embeddings | `google-genai` embedding model |
 | Memory | SQLite + `sqlite-vec`; numpy cosine fallback |
@@ -139,8 +142,9 @@ Do NOT invent these. Check https://aistudio.google.com or the Gemini changelog.
 - **Accept:** `python -m server.app` → browser shows UI with fake claim cards
 
 ### Phase 1 — Audio Spine (~45 min)
-- `scripts/play_clip.py` — `livekit.rtc` join room, read WAV, publish frames
-- `adapters/livekit_audio.py` — AgentSession with Gemini Realtime (STT only), print sentences
+- `scripts/play_clip.py` — `livekit.rtc` join room, ffmpeg-decode any format, publish 16kHz mono PCM frames
+- `adapters/livekit_audio.py` — LiveKit Agent (no AgentSession): `on_track_subscribed` → `rtc.AudioStream` → pipe PCM frames to `client.aio.live.connect()` → `sc.input_transcription.text` → print + orchestrator
+- **Why no AgentSession:** Live models only output AUDIO modality; bypassing it gives direct control over frame routing and transcription
 - **Accept:** `play_clip.py` → agent logs finalized sentences in real-time
 
 ### Phase 2 — Detection + Curated KB + Fast Verdicts (~60 min)
