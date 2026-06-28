@@ -15,8 +15,8 @@ Goal: build `veritas/` from scratch, Phases 0–7 in order.
 ## Architecture
 
 ```
-Demo clip (any audio file — MP3/MP4/WAV/etc.)
-  → scripts/play_clip.py  (ffmpeg decode → PCM → LiveKit room as audio track)
+Microphone (default system input)
+  → scripts/publish_mic.py  (ffmpeg avfoundation/pulse → 16kHz mono PCM → LiveKit room as audio track)
     → adapters/livekit_audio.py  (LiveKit Agent)
       → on_track_subscribed → rtc.AudioStream → raw PCM frames
         → client.aio.live.connect(model=GEMINI_LIVE_MODEL)
@@ -49,7 +49,7 @@ Demo clip (any audio file — MP3/MP4/WAV/etc.)
 | Embeddings | `google-genai` embedding model |
 | Memory | SQLite + `sqlite-vec`; numpy cosine fallback |
 | UI comms | Agent → HTTP POST localhost → FastAPI → WebSocket → browser |
-| Demo clip | Real earnings call (Apple Q3 FY2025); download with `yt-dlp`, trim with `ffmpeg` |
+| Audio input | System microphone via ffmpeg (`avfoundation` on macOS, `pulse` on Linux); published as a LiveKit track |
 | Async research | Interactions API: `client.interactions.create(model=FLASH, input=claim, tools=[{"type":"google_search"}], background=True)` → poll → write to memory |
 
 ---
@@ -76,14 +76,14 @@ veritas/
 │   ├── metrics.py            # coverage + rolling mean_time_to_verdict
 │   └── orchestrator.py       # Wires transcript → detect → verify → contradiction → push
 ├── kb/
-│   ├── demo_clip_facts.yaml  # ~20 curated ground-truth facts for chosen clip
+│   ├── domain_facts.yaml     # ~20 curated ground-truth facts for the demo domain
 │   └── build_kb.py           # Embed facts → write VerifiedFact rows to SQLite
 ├── server/
 │   ├── app.py                # FastAPI + WebSocket + /internal/events receiver
 │   └── static/
 │       └── index.html        # Claim cards + contradiction banner + 2 big live metrics
 └── scripts/
-    ├── play_clip.py          # livekit-rtc: join room, publish audio file as track
+    ├── publish_mic.py        # livekit-rtc: capture default mic via ffmpeg, publish as track
     ├── reset_memory.py       # DELETE all rows → COLD
     └── seed_memory.py        # build_kb → WARM
 tests/
@@ -94,18 +94,24 @@ tests/
 
 ---
 
-## Demo Clip: Real Earnings Call
+## Audio Input: Microphone
 
-**Recommended:** Apple Q3 FY2025 earnings (reported late July 2025).
+Audio is captured from the **default system microphone** using ffmpeg and published into a LiveKit room.
 
-### Prep (do before Phase 2 coding)
-```bash
-yt-dlp "https://www.youtube.com/..." -o demo_clip_raw.%(ext)s   # official IR upload
-ffmpeg -i demo_clip_raw.* -ss 00:02:00 -t 00:05:00 -ar 16000 -ac 1 veritas/kb/demo_clip.wav
-```
-Target: 4–6 min CFO prepared remarks (densest verifiable claims).
+### Platform commands used by `publish_mic.py`
 
-### KB Facts to curate (example — verify against Apple's official press release)
+| Platform | ffmpeg input |
+|---|---|
+| macOS | `-f avfoundation -i ":0"` |
+| Linux | `-f pulse -i default` |
+| Windows | `-f dshow -i audio=...` |
+
+Output is always: `-f s16le -ar 16000 -ac 1` (signed 16-bit PCM, 16kHz, mono).
+
+### KB Facts to curate
+
+Curate ~20 facts relevant to the live conversation domain before seeding memory.
+For a finance/earnings demo, example facts:
 
 | Subject | Value | Verdict |
 |---|---|---|
@@ -115,11 +121,9 @@ Target: 4–6 min CFO prepared remarks (densest verifiable claims).
 | YoY revenue growth | 5% | true |
 | Installed base active devices | 2.35B | true |
 | Q4 guidance revenue | ~$89B | unverifiable (forward-looking) |
-| *(any figure speaker rounds differently in two places)* | — | **contradiction** |
+| *(any figure stated differently twice)* | — | **contradiction** |
 
-**All figures must be verified against Apple's official Q3 FY2025 press release before committing.**
-
-Natural contradictions: look for YoY vs QoQ confusion, or the same metric rounded differently in prepared remarks vs Q&A.
+Verify all figures against official sources before committing to `domain_facts.yaml`.
 
 ---
 
@@ -142,37 +146,37 @@ Do NOT invent these. Check https://aistudio.google.com or the Gemini changelog.
 - **Accept:** `python -m server.app` → browser shows UI with fake claim cards
 
 ### Phase 1 — Audio Spine (~45 min)
-- `scripts/play_clip.py` — `livekit.rtc` join room, ffmpeg-decode any format, publish 16kHz mono PCM frames
+- `scripts/publish_mic.py` — `livekit.rtc` join room, capture default mic via ffmpeg, publish 16kHz mono PCM frames as audio track
 - `adapters/livekit_audio.py` — LiveKit Agent (no AgentSession): `on_track_subscribed` → `rtc.AudioStream` → pipe PCM frames to `client.aio.live.connect()` → `sc.input_transcription.text` → print + orchestrator
 - **Why no AgentSession:** Live models only output AUDIO modality; bypassing it gives direct control over frame routing and transcription
-- **Accept:** `play_clip.py` → agent logs finalized sentences in real-time
+- **Accept:** speak into mic → agent logs finalized sentences in real-time to terminal
 
 ### Phase 2 — Detection + Curated KB + Fast Verdicts (~60 min)
 - `adapters/gemini_flash.py` — structured claim JSON via Flash
-- `kb/demo_clip_facts.yaml` + `kb/build_kb.py` — embed and store 20 ground-truth facts
+- `kb/domain_facts.yaml` + `kb/build_kb.py` — embed and store 20 ground-truth facts
 - `core/verifier.py` — numpy cosine search (fast fallback, no sqlite-vec needed yet)
 - `core/orchestrator.py` — pipe sentence → flash → verify → HTTP POST to server
 - `server/app.py` — `/internal/events` endpoint + WebSocket broadcast
 - `index.html` — claim cards (status, subject, verdict icon, source)
-- **Accept:** clip plays → known claims show ✓/✗ in browser within 1.5s
+- **Accept:** speak a known claim → ✓/✗ card appears in browser within 1.5s
 
 ### Phase 3 — Persistent Memory (~60 min) ← THE MOAT
 - `core/memory.py` — SQLite + `sqlite-vec`; `put`, `get`, `vector_search`, `facts_by_subject`, `touch`
 - Verifier writes resolved facts back to memory
 - `scripts/reset_memory.py` + `scripts/seed_memory.py`
 - `tests/test_memory_persistence.py` — write facts, subprocess kill, re-open, assert present
-- **Accept:** test passes; second clip run shows lower mean_time_to_verdict
+- **Accept:** test passes; second session shows lower mean_time_to_verdict
 
 ### Phase 4 — Contradiction Detection (~45 min) ← DEMO MOMENT
 - `core/contradiction.py` — embed subjects (cosine ≥ 0.85), compare numeric values
 - Push `{type: "contradiction", ...}` event from orchestrator
 - `index.html` — full-width red banner "⚠️ CONTRADICTION — said X at 0:45, now Y at 2:30"
-- **Accept:** the targeted contradiction fires a loud alert live
+- **Accept:** say a figure, then say a conflicting figure → contradiction alert fires live
 
 ### Phase 5 — Metrics + Cold/Warm (~30 min)
 - `core/metrics.py` — thread-safe `SessionMetrics`, pushed after every event
 - `index.html` — two big live counters: "Coverage: 67%" and "Avg verdict: 234ms"
-- **Accept:** counters move; COLD run shows higher latency than WARM run
+- **Accept:** counters move; COLD session shows higher latency than WARM session
 
 ### Phase 6 — Interactions API Research Worker (~45 min)
 - `adapters/gemini_interactions.py`:
@@ -187,7 +191,7 @@ Do NOT invent these. Check https://aistudio.google.com or the Gemini changelog.
   # parse interaction.output_text → VerifiedFact → memory.put()
   ```
 - `core/research_queue.py` — asyncio queue; dequeues MISS claims, calls adapter, writes to memory, HTTP POSTs update to UI
-- The learning story: MISS during run → Interactions researches → writes to memory → NEXT run of same clip → instant hit, card was ⏳ now permanent ✓/✗
+- The learning story: MISS during session → Interactions researches → writes to memory → NEXT session same claim → instant hit, card was ⏳ now permanent ✓/✗
 - **Accept:** one unrehearsed claim resolves from ⏳ to ✓/✗ live; identical claim on replay is instant
 
 ### Phase 7 — UI Polish (~30 min)
@@ -195,7 +199,7 @@ Do NOT invent these. Check https://aistudio.google.com or the Gemini changelog.
 - **Accept:** first-time viewer immediately understands what happened
 
 ### Phase 8 — Rehearse + Record
-- 5 runs (2 COLD, 2 WARM, 1 COLD again)
+- Run 5 sessions (2 COLD, 2 WARM, 1 COLD again) with a scripted set of spoken claims
 - Record 1-min demo video, repo public, all members on submission
 
 ---
@@ -203,12 +207,12 @@ Do NOT invent these. Check https://aistudio.google.com or the Gemini changelog.
 ## Verification Checklist (Definition of Done)
 
 - [ ] `python -m server.app` → browser shows UI
-- [ ] `python scripts/play_clip.py` → agent logs sentences
+- [ ] `python scripts/publish_mic.py` → agent logs sentences from spoken input
 - [ ] `python kb/build_kb.py` → SQLite has 20 VerifiedFact rows with embeddings
-- [ ] Clip plays → claim cards appear with ✓/✗ within 1.5s
+- [ ] Speak a known claim → claim card appears with ✓/✗ within 1.5s
 - [ ] `pytest tests/test_memory_persistence.py` PASSES
-- [ ] Second clip run is measurably faster (mean_time_to_verdict drops)
-- [ ] Contradiction banner fires on the targeted metric discrepancy
+- [ ] Second session is measurably faster (mean_time_to_verdict drops)
+- [ ] Contradiction banner fires when conflicting values are spoken
 - [ ] Coverage and mean_time_to_verdict move live on screen
 - [ ] Demo runs with wifi off (except pre-warmed Gemini calls)
 - [ ] 1-min video recorded; repo public; all team members on submission

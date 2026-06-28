@@ -1,4 +1,4 @@
-"""Publish any audio file (WAV/MP3/MP4/M4A/etc.) into a LiveKit room as an audio track."""
+"""Capture audio from the system microphone via ffmpeg and publish it into a LiveKit room."""
 import asyncio
 import logging
 import subprocess
@@ -20,11 +20,20 @@ SAMPLES_PER_CHUNK = int(SAMPLE_RATE * CHUNK_DURATION_S)
 BYTES_PER_CHUNK = SAMPLES_PER_CHUNK * CHANNELS * 2  # 16-bit = 2 bytes
 
 
-def _ffmpeg_decode(path: str) -> subprocess.Popen:
-    """Decode any audio file to raw 16kHz mono s16le PCM via ffmpeg."""
+def _ffmpeg_mic() -> subprocess.Popen:
+    """Capture default microphone as raw 16kHz mono s16le PCM via ffmpeg."""
+    if sys.platform == "darwin":
+        # macOS: AVFoundation; ":0" = default audio input device
+        src_args = ["-f", "avfoundation", "-i", ":0"]
+    elif sys.platform == "win32":
+        src_args = ["-f", "dshow", "-i", "audio=@device_cm_{33D9A762-90C8-11D0-BD43-00A0C911CE86}\\wave_{default}"]
+    else:
+        # Linux: try PulseAudio first, fall back to ALSA
+        src_args = ["-f", "pulse", "-i", "default"]
+
     cmd = [
         "ffmpeg", "-v", "quiet",
-        "-i", path,
+        *src_args,
         "-f", "s16le",
         "-ar", str(SAMPLE_RATE),
         "-ac", str(CHANNELS),
@@ -33,26 +42,25 @@ def _ffmpeg_decode(path: str) -> subprocess.Popen:
     return subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
 
 
-async def publish_clip(path: str, room_name: str = config.LIVEKIT_ROOM_NAME) -> None:
+async def publish_microphone(room_name: str = config.LIVEKIT_ROOM_NAME) -> None:
     token = (
         AccessToken(config.LIVEKIT_API_KEY, config.LIVEKIT_API_SECRET)
-        .with_identity("clip-player")
-        .with_name("Demo Clip")
+        .with_identity("mic-publisher")
+        .with_name("Microphone")
         .with_grants(VideoGrants(room=room_name, room_join=True, can_publish=True, can_subscribe=False))
     )
 
     room = rtc.Room()
     log.info("Connecting to LiveKit room '%s'…", room_name)
     await room.connect(config.LIVEKIT_URL, token.to_jwt())
-    log.info("Connected.")
+    log.info("Connected. Capturing from microphone — Ctrl+C to stop.")
 
     source = rtc.AudioSource(sample_rate=SAMPLE_RATE, num_channels=CHANNELS)
-    track = rtc.LocalAudioTrack.create_audio_track("demo-clip", source)
+    track = rtc.LocalAudioTrack.create_audio_track("microphone", source)
     opts = rtc.TrackPublishOptions(source=rtc.TrackSource.SOURCE_MICROPHONE)
     await room.local_participant.publish_track(track, opts)
-    log.info("Streaming %s…", path)
 
-    proc = _ffmpeg_decode(path)
+    proc = _ffmpeg_mic()
     try:
         loop = asyncio.get_event_loop()
         while True:
@@ -68,19 +76,18 @@ async def publish_clip(path: str, room_name: str = config.LIVEKIT_ROOM_NAME) -> 
             )
             await source.capture_frame(frame)
             await asyncio.sleep(CHUNK_DURATION_S)
+    except asyncio.CancelledError:
+        pass
     finally:
         proc.terminate()
 
-    log.info("Clip finished. Disconnecting…")
-    await asyncio.sleep(1)
+    log.info("Microphone stopped. Disconnecting…")
     await room.disconnect()
 
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-    path = sys.argv[1] if len(sys.argv) > 1 else "kb/demo_clip.wav"
-    if not Path(path).exists():
-        print(f"ERROR: File not found: {path}")
-        print("Usage: python scripts/play_clip.py <clip.mp3|clip.mp4|clip.wav|...>")
-        sys.exit(1)
-    asyncio.run(publish_clip(path))
+    try:
+        asyncio.run(publish_microphone())
+    except KeyboardInterrupt:
+        pass
